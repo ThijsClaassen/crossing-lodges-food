@@ -826,7 +826,14 @@ export default function App() {
               />
             )}
             {activeTab === 'orders' && role === 'admin' && (
-              <OrdersTab items={items} metricsByItem={metricsByItem} suppliers={suppliers} supplierById={supplierById} />
+              <OrdersTab
+                items={items}
+                metricsByItem={metricsByItem}
+                suppliers={suppliers}
+                supplierById={supplierById}
+                recipes={recipes}
+                ingredientsByRecipe={ingredientsByRecipe}
+              />
             )}
           </>
         )}
@@ -2066,129 +2073,365 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
 // Orders tab — items at/below their reorder point, grouped by supplier
 // ---------------------------------------------------------------------------
 
-function OrdersTab({ items, metricsByItem, suppliers, supplierById }) {
+// Groups any list of rows by the supplier of whichever item each row is
+// about — shared between the automatic restock list and the menu-planner
+// shortfall list below, so both group and sort the same way.
+function groupBySupplier(rows, getItem, supplierById) {
+  const map = {}
+  for (const row of rows) {
+    const key = getItem(row).supplier_id || UNASSIGNED_SUPPLIER
+    ;(map[key] ||= []).push(row)
+  }
+  const groups = Object.entries(map).map(([key, groupRows]) => ({
+    key,
+    supplier: key === UNASSIGNED_SUPPLIER ? null : supplierById[key],
+    rows: groupRows,
+  }))
+  groups.sort((a, b) => {
+    if (a.key === UNASSIGNED_SUPPLIER) return 1
+    if (b.key === UNASSIGNED_SUPPLIER) return -1
+    return (a.supplier?.name || '').localeCompare(b.supplier?.name || '')
+  })
+  return groups
+}
+
+async function copyToClipboard(text, onDone) {
+  try {
+    await navigator.clipboard.writeText(text)
+    onDone()
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      onDone()
+    } catch {
+      // Nothing more we can do — leave it uncopied silently.
+    }
+    document.body.removeChild(textarea)
+  }
+}
+
+function OrdersTab({ items, metricsByItem, suppliers, supplierById, recipes, ingredientsByRecipe }) {
   const [copiedKey, setCopiedKey] = useState(null)
   const toOrder = items.filter((it) => (metricsByItem[it.id]?.reorderQty || 0) > 0)
+  const restockGroups = useMemo(() => groupBySupplier(toOrder, (it) => it, supplierById), [toOrder, supplierById])
 
-  async function copyGroup(group) {
-    const text = group.items
-      .map((it) => `${it.name}\t${fmt(metricsByItem[it.id]?.reorderQty, 0)}`)
-      .join('\n')
-
-    const flash = () => {
-      setCopiedKey(group.key)
-      setTimeout(() => setCopiedKey((k) => (k === group.key ? null : k)), 2000)
-    }
-
-    try {
-      await navigator.clipboard.writeText(text)
-      flash()
-    } catch {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.focus()
-      textarea.select()
-      try {
-        document.execCommand('copy')
-        flash()
-      } catch {
-        // Nothing more we can do — leave it uncopied silently.
-      }
-      document.body.removeChild(textarea)
-    }
+  function flash(key) {
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 2000)
   }
 
-  const groups = useMemo(() => {
-    const map = {}
-    for (const it of toOrder) {
-      const key = it.supplier_id || UNASSIGNED_SUPPLIER
-      ;(map[key] ||= []).push(it)
-    }
-    const rows = Object.entries(map).map(([key, groupItems]) => ({
-      key,
-      supplier: key === UNASSIGNED_SUPPLIER ? null : supplierById[key],
-      items: groupItems,
-    }))
-    rows.sort((a, b) => {
-      if (a.key === UNASSIGNED_SUPPLIER) return 1
-      if (b.key === UNASSIGNED_SUPPLIER) return -1
-      return (a.supplier?.name || '').localeCompare(b.supplier?.name || '')
-    })
-    return rows
-  }, [toOrder, supplierById])
-
-  if (toOrder.length === 0) {
-    return (
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>To be ordered</div>
-        <div style={{ fontSize: 13 }}>Nothing needs ordering right now.</div>
-      </div>
-    )
+  function copyRestockGroup(group) {
+    const text = group.rows.map((it) => `${it.name}\t${fmt(metricsByItem[it.id]?.reorderQty, 0)}`).join('\n')
+    copyToClipboard(text, () => flash(group.key))
   }
 
   return (
     <>
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, padding: '0 2px' }}>
-        {toOrder.length} item{toOrder.length === 1 ? '' : 's'} to order, grouped by supplier so each
-        order is ready to send.
+        The restock list below is automatic, from each item's min/max levels. The menu order planner
+        further down works out extra ingredients needed for a specific event, on top of that.
       </div>
-      {groups.map((group) => (
-        <div style={styles.card} key={group.key}>
-          <div style={{ ...styles.row, justifyContent: 'space-between' }}>
-            <div style={styles.cardTitle}>
-              {group.supplier ? group.supplier.name : 'Unassigned'} ({group.items.length})
+
+      {toOrder.length === 0 ? (
+        <div style={styles.card}>
+          <div style={styles.cardTitle}>Restock — low on stock</div>
+          <div style={{ fontSize: 13 }}>Nothing is below its reorder point right now.</div>
+        </div>
+      ) : (
+        restockGroups.map((group) => (
+          <div style={styles.card} key={`restock-${group.key}`}>
+            <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+              <div style={styles.cardTitle}>
+                {group.supplier ? group.supplier.name : 'Unassigned'} ({group.rows.length})
+              </div>
+              <button style={styles.buttonGhost} onClick={() => copyRestockGroup(group)}>
+                {copiedKey === group.key ? 'Copied!' : 'Copy list'}
+              </button>
             </div>
-            <button style={styles.buttonGhost} onClick={() => copyGroup(group)}>
-              {copiedKey === group.key ? 'Copied!' : 'Copy list'}
+            {group.supplier && (group.supplier.contact_name || group.supplier.phone || group.supplier.email) && (
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+                {[group.supplier.contact_name, group.supplier.phone, group.supplier.email]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </div>
+            )}
+            {!group.supplier && (
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+                These items have no supplier linked — set one on the Items tab so they group into an
+                order next time.
+              </div>
+            )}
+            <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Item</th>
+                  <th style={styles.th}>Theoretical stock</th>
+                  <th style={styles.th}>Min</th>
+                  <th style={styles.th}>Max</th>
+                  <th style={styles.th}>Order qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.rows.map((it) => {
+                  const m = metricsByItem[it.id]
+                  return (
+                    <tr key={it.id}>
+                      <td style={styles.td}>{it.name}</td>
+                      <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
+                      <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
+                      <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
+                      <td style={styles.td}>
+                        <strong>{fmt(m.reorderQty, 0)}</strong>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            </div>
+          </div>
+        ))
+      )}
+
+      <MenuOrderPlanner
+        items={items}
+        metricsByItem={metricsByItem}
+        recipes={recipes}
+        ingredientsByRecipe={ingredientsByRecipe}
+        supplierById={supplierById}
+        copiedKey={copiedKey}
+        onCopied={flash}
+      />
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Menu order planner — pick one or more menus off the Menu tab, say how
+// many guests each is for, and it works out the total of every ingredient
+// needed across the whole plan (recipe qty ÷ portions × guests, per
+// recipe), converts that from each item's recipe_unit into its
+// purchase_unit, and checks it against what's currently in stock. Anything
+// short gets grouped by supplier just like the restock list above.
+//
+// This is a live calculator, not a saved plan — it resets if you leave the
+// Orders tab, by design, since it's meant for "what do I need for Saturday's
+// wedding" rather than a standing order.
+// ---------------------------------------------------------------------------
+
+function MenuOrderPlanner({ items, metricsByItem, recipes, ingredientsByRecipe, supplierById, copiedKey, onCopied }) {
+  const [defaultGuests, setDefaultGuests] = useState('')
+  const [planRows, setPlanRows] = useState([{ recipe_id: '', guests: '' }])
+
+  function addPlanRow() {
+    setPlanRows((prev) => [...prev, { recipe_id: '', guests: defaultGuests }])
+  }
+  function updatePlanRow(i, patch) {
+    setPlanRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  }
+  function removePlanRow(i) {
+    setPlanRows((prev) => (prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev))
+  }
+  function applyDefaultToAll() {
+    setPlanRows((prev) => prev.map((r) => ({ ...r, guests: defaultGuests })))
+  }
+
+  const itemById = useMemo(() => {
+    const map = {}
+    for (const it of items) map[it.id] = it
+    return map
+  }, [items])
+
+  const activeRows = useMemo(() => planRows.filter((r) => r.recipe_id && Number(r.guests) > 0), [planRows])
+
+  // recipe_unit total needed per item, summed across every active row —
+  // e.g. flour needed for both the starter and the dessert lands in one
+  // combined total before it's ever compared to stock.
+  const menuRows = useMemo(() => {
+    const need = {}
+    for (const row of activeRows) {
+      const recipe = recipes.find((r) => r.id === row.recipe_id)
+      if (!recipe) continue
+      const portions = Number(recipe.portions) || 1
+      const guests = Number(row.guests)
+      for (const ing of ingredientsByRecipe[row.recipe_id] || []) {
+        const perPortion = Number(ing.qty_recipe_unit || 0) / portions
+        need[ing.item_id] = (need[ing.item_id] || 0) + perPortion * guests
+      }
+    }
+    const rows = []
+    for (const [itemId, recipeUnitQty] of Object.entries(need)) {
+      const item = itemById[itemId]
+      if (!item) continue
+      const factor = Number(item.conversion_factor) > 0 ? Number(item.conversion_factor) : 1
+      const neededPurchaseUnits = recipeUnitQty / factor
+      const m = metricsByItem[itemId]
+      const available = m ? (m.hasCount ? m.closingCount : m.theoreticalClosing) : 0
+      const shortfall = Math.max(neededPurchaseUnits - available, 0)
+      rows.push({ item, neededPurchaseUnits, available, shortfall })
+    }
+    return rows.sort((a, b) => a.item.name.localeCompare(b.item.name))
+  }, [activeRows, recipes, ingredientsByRecipe, itemById, metricsByItem])
+
+  const shortRows = useMemo(() => menuRows.filter((r) => r.shortfall > 0), [menuRows])
+  const shortGroups = useMemo(() => groupBySupplier(shortRows, (r) => r.item, supplierById), [shortRows, supplierById])
+
+  function copyMenuGroup(group) {
+    const text = group.rows.map((r) => `${r.item.name}\t${fmt(r.shortfall, 2)} ${r.item.purchase_unit}`).join('\n')
+    copyToClipboard(text, () => onCopied(`menu-${group.key}`))
+  }
+
+  return (
+    <>
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Order for a menu plan</div>
+        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+          Pick one or more menus and how many guests each is for. This adds up every ingredient
+          needed across the whole plan, checks it against what's currently in stock, and tells you
+          what's short.
+        </div>
+        <div style={{ ...styles.row, gap: 8, marginBottom: 12, alignItems: 'flex-end' }}>
+          <div>
+            <label style={styles.label}>Default guests</label>
+            <input
+              type="number"
+              style={{ ...styles.input, width: 100 }}
+              value={defaultGuests}
+              onChange={(e) => setDefaultGuests(e.target.value)}
+            />
+          </div>
+          <button style={styles.buttonGhost} onClick={applyDefaultToAll}>
+            Apply to all rows
+          </button>
+        </div>
+        {planRows.map((row, i) => (
+          <div key={i} style={{ ...styles.row, gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <select
+              style={{ ...styles.input, flex: '2 1 200px' }}
+              value={row.recipe_id}
+              onChange={(e) => updatePlanRow(i, { recipe_id: e.target.value })}
+            >
+              <option value="">Choose menu…</option>
+              {recipes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="number"
+              placeholder="Guests"
+              style={{ ...styles.input, width: 90 }}
+              value={row.guests}
+              onChange={(e) => updatePlanRow(i, { guests: e.target.value })}
+            />
+            <button style={styles.buttonDanger} onClick={() => removePlanRow(i)}>
+              Remove
             </button>
           </div>
-          {group.supplier && (group.supplier.contact_name || group.supplier.phone || group.supplier.email) && (
-            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-              {[group.supplier.contact_name, group.supplier.phone, group.supplier.email]
-                .filter(Boolean)
-                .join(' · ')}
-            </div>
-          )}
-          {!group.supplier && (
-            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-              These items have no supplier linked — set one on the Items tab so they group into an
-              order next time.
-            </div>
-          )}
+        ))}
+        <button style={styles.buttonGhost} onClick={addPlanRow}>
+          + Add another menu
+        </button>
+      </div>
+
+      {menuRows.length > 0 && (
+        <div style={styles.card}>
+          <div style={styles.cardTitle}>Ingredients needed for this plan</div>
           <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead>
               <tr>
                 <th style={styles.th}>Item</th>
-                <th style={styles.th}>Theoretical stock</th>
-                <th style={styles.th}>Min</th>
-                <th style={styles.th}>Max</th>
-                <th style={styles.th}>Order qty</th>
+                <th style={styles.th}>Needed</th>
+                <th style={styles.th}>In stock</th>
+                <th style={styles.th}>Short by</th>
               </tr>
             </thead>
             <tbody>
-              {group.items.map((it) => {
-                const m = metricsByItem[it.id]
-                return (
-                  <tr key={it.id}>
-                    <td style={styles.td}>{it.name}</td>
-                    <td style={styles.tdNum}>{fmt(m.theoreticalClosing, 1)}</td>
-                    <td style={styles.tdNum}>{fmt(it.min_units, 0)}</td>
-                    <td style={styles.tdNum}>{fmt(it.max_units, 0)}</td>
-                    <td style={styles.td}>
-                      <strong>{fmt(m.reorderQty, 0)}</strong>
-                    </td>
-                  </tr>
-                )
-              })}
+              {menuRows.map((r) => (
+                <tr key={r.item.id}>
+                  <td style={styles.td}>{r.item.name}</td>
+                  <td style={styles.tdNum}>
+                    {fmt(r.neededPurchaseUnits, 2)} {r.item.purchase_unit}
+                  </td>
+                  <td style={styles.tdNum}>
+                    {fmt(r.available, 2)} {r.item.purchase_unit}
+                  </td>
+                  <td style={styles.td}>
+                    {r.shortfall > 0 ? (
+                      <strong style={{ color: colors.danger }}>
+                        {fmt(r.shortfall, 2)} {r.item.purchase_unit}
+                      </strong>
+                    ) : (
+                      <span style={{ color: colors.ok }}>Covered</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
           </div>
         </div>
-      ))}
+      )}
+
+      {shortRows.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, color: colors.muted, margin: '4px 2px' }}>
+            {shortRows.length} item{shortRows.length === 1 ? '' : 's'} short for this plan, grouped by
+            supplier and ready to order.
+          </div>
+          {shortGroups.map((group) => (
+            <div style={styles.card} key={`menu-${group.key}`}>
+              <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+                <div style={styles.cardTitle}>
+                  {group.supplier ? group.supplier.name : 'Unassigned'} ({group.rows.length})
+                </div>
+                <button style={styles.buttonGhost} onClick={() => copyMenuGroup(group)}>
+                  {copiedKey === `menu-${group.key}` ? 'Copied!' : 'Copy list'}
+                </button>
+              </div>
+              {group.supplier && (group.supplier.contact_name || group.supplier.phone || group.supplier.email) && (
+                <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+                  {[group.supplier.contact_name, group.supplier.phone, group.supplier.email]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              )}
+              <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Item</th>
+                    <th style={styles.th}>Order qty</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.rows.map((r) => (
+                    <tr key={r.item.id}>
+                      <td style={styles.td}>{r.item.name}</td>
+                      <td style={styles.td}>
+                        <strong>
+                          {fmt(r.shortfall, 2)} {r.item.purchase_unit}
+                        </strong>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </>
   )
 }
