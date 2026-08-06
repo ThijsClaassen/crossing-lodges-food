@@ -116,6 +116,74 @@ For deployment: push this folder to a new GitHub repo (e.g.
 `crossing-lodges-food`), import it into Vercel, done — no environment
 variables needed since credentials are baked into `sb.js`.
 
+## Purchases tab: Scan a slip (AI-read purchases)
+
+Instead of typing each line of a delivery slip or invoice by hand, the
+Purchases tab now has a **Scan / photograph slip** button. Take a photo (or
+upload one) and the app reads the item list, quantities, and prices off it
+automatically, using Anthropic's Claude API (a vision-capable AI model) —
+then shows you a review screen before anything is saved. Nothing is
+written to the database until a person presses **Approve & save**; the AI
+only ever proposes a draft.
+
+On the review screen, each line from the slip gets matched against your
+existing item list:
+
+- **Green "Matched"** — the app is confident this line corresponds to a
+  specific item; it's pre-selected in the dropdown. Still worth a glance,
+  but usually just needs the qty/cost double-checked, and the unit column
+  is shown alongside so you can confirm the quantity is in that item's
+  purchase unit.
+- **Amber "Check this"** — no confident match. The dropdown starts empty
+  (with the AI's best guess shown as a hint in the placeholder text, if it
+  has one) — pick the right item, or tick **Skip** to leave that line out
+  entirely. Nothing gets added to stock without a person confirming it.
+
+Date and supplier are also read off the slip where visible and pre-filled
+as plain text (same as manual entry — Food's Purchases tab doesn't use a
+supplier dropdown the way the beverage app does); both are editable before
+you approve. Approving inserts one row per non-skipped, matched line into
+the exact same `food_purchases` table manual entries use — there's no
+separate "scanned purchases" table, and none of the costing/usage formulas
+changed.
+
+### Setup (required before this works)
+
+This feature needs an Anthropic API key — it's a separate thing from your
+Claude.ai login, meant for developers/apps to call Claude programmatically,
+and it costs a small amount per use (a photo like this is typically a
+fraction of a cent to a few cents, depending on the model).
+
+1. Go to **console.anthropic.com**, create an account (or use an existing
+   one), and set up billing.
+2. Create an API key there.
+3. In **Vercel → this project → Settings → Environment Variables**, add:
+   - `ANTHROPIC_API_KEY` = the key you just created
+   - (optional) `ANTHROPIC_MODEL` = a specific model name, if you ever want
+     to change it from the default (`claude-sonnet-5`) — check
+     `docs.claude.com` for current model names if this stops working after
+     a long time, since model names do get retired eventually.
+4. Redeploy (Vercel → Deployments → Redeploy) so the new environment
+   variable takes effect.
+
+**Never put the API key in the code or in a `.env` file that gets
+committed** — it's a real secret, unlike the Supabase anon key. Vercel's
+Environment Variables panel keeps it out of the repo and out of the
+browser; the key is only ever used inside `api/parse-slip.js`, which runs
+on Vercel's servers, not in anyone's browser.
+
+**Local testing:** this feature calls `/api/parse-slip`, which only exists
+once deployed to Vercel — plain `npm run dev` won't have it (Vite's dev
+server doesn't know about `/api` routes). Test it after deploying, or run
+`vercel dev` locally if you want to test before pushing to production.
+
+**Slip scanning is a best-effort read, not OCR-perfect** — blurry photos,
+handwriting, or unusual slip layouts can produce wrong quantities/prices
+or miss lines entirely, and the AI can't know your specific unit
+conventions from a photo alone. That's exactly why every scanned line goes
+through the review/approve screen instead of saving straight to the
+database — treat it as a fast first draft, not ground truth.
+
 ## Units: purchase unit vs. recipe unit
 
 Food is bought in bulk (a 5kg bag, a case) but used in small amounts per

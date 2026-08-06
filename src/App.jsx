@@ -25,6 +25,81 @@ function fmt(n, decimals = 2) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Scan-a-slip helpers — used by the Purchases tab's "Scan slip" flow. A
+// photo is resized client-side, sent to /api/parse-slip (a Vercel
+// serverless function that calls Anthropic's vision API — see that file
+// for why this can't happen directly in the browser), and the returned
+// line items are fuzzy-matched against the current item/supplier lists so
+// confident matches can be pre-filled on the review screen.
+// ---------------------------------------------------------------------------
+
+// Shrinks a photo before upload — keeps the request well under Vercel's
+// serverless body-size limit and speeds up the AI call, without losing the
+// legibility a slip actually needs (long edge capped at 1800px is plenty
+// for printed or handwritten text).
+async function resizeImageFile(file, maxDim = 1800, quality = 0.82) {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+  const w = Math.round(bitmap.width * scale)
+  const h = Math.round(bitmap.height * scale)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h)
+  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/jpeg', quality))
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+// Simple, dependency-free fuzzy matcher: normalizes both strings, scores by
+// token overlap plus a bonus if one fully contains the other. Good enough
+// to tell "Chicken Breast 5kg" apart from "Chicken Thigh 5kg" while still
+// matching "CHICKEN BREAST FILLET 5KG BAG" to "Chicken Breast 5kg".
+function normalizeForMatch(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function matchScore(a, b) {
+  const na = normalizeForMatch(a)
+  const nb = normalizeForMatch(b)
+  if (!na || !nb) return 0
+  if (na === nb) return 1
+  const tokensA = na.split(' ').filter(Boolean)
+  const tokensB = nb.split(' ').filter(Boolean)
+  const setB = new Set(tokensB)
+  let overlap = 0
+  for (const t of tokensA) if (setB.has(t)) overlap++
+  const overlapScore = overlap / Math.max(tokensA.length, tokensB.length)
+  const substrBonus = na.includes(nb) || nb.includes(na) ? 0.2 : 0
+  return Math.min(1, overlapScore + substrBonus)
+}
+
+// Confident-match threshold for pre-filling a dropdown vs. leaving it for
+// a person to decide. Tuned loose-but-safe: below this, the row is always
+// flagged for manual review rather than silently guessing wrong.
+const MATCH_CONFIDENT = 0.55
+
+function findBestMatch(text, candidates, nameKey = 'name') {
+  let best = null
+  let bestScore = 0
+  for (const c of candidates) {
+    const score = matchScore(text, c[nameKey])
+    if (score > bestScore) {
+      bestScore = score
+      best = c
+    }
+  }
+  return { match: best, score: bestScore, confident: bestScore >= MATCH_CONFIDENT }
+}
+
 // Reasons an issue can be logged under. This is a WRITE-OFF log only —
 // breakage, expired stock, staff meals, or other losses. Normal cooking
 // usage is never logged transaction-by-transaction here; it's calculated
@@ -837,6 +912,7 @@ export default function App() {
               <PurchasesTab
                 items={items}
                 purchases={purchases}
+                suppliers={suppliers}
                 location={location}
                 period={period}
                 onAdd={addLocalPurchase}
@@ -1582,10 +1658,262 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
 }
 
 // ---------------------------------------------------------------------------
+// Scan a slip — photograph or upload a purchase slip, let /api/parse-slip
+// (Anthropic vision, server-side) read the line items, then a person
+// reviews/corrects the list before anything is saved. Nothing here writes
+// to the database until "Approve & save" is pressed — the AI only ever
+// proposes a draft. Quantities are read in whatever unit the slip shows
+// them in — check each row against the item's purchase unit (shown in the
+// Items tab) before approving, since the AI can't know your unit
+// conventions from the photo alone.
+// ---------------------------------------------------------------------------
+
+function SlipScanCard({ items, location, onApproved }) {
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState('')
+  const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
+  const [saving, setSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('')
+  const fileInputRef = useRef(null)
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file again next time
+    if (!file) return
+    setScanError('')
+    setSaveStatus('')
+    setScanning(true)
+    try {
+      const resized = await resizeImageFile(file)
+      const base64 = await blobToBase64(resized)
+      const res = await fetch('/api/parse-slip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: base64, media_type: 'image/jpeg' }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Could not read that slip.')
+
+      const rows = (data.line_items || []).map((li, idx) => {
+        const itemMatch = findBestMatch(li.raw_text, items, 'name')
+        return {
+          key: idx,
+          raw_text: li.raw_text,
+          item_id: itemMatch.confident ? itemMatch.match.id : '',
+          confident: itemMatch.confident,
+          guessName: itemMatch.match?.name || '',
+          qty: li.qty ?? 1,
+          total_cost: li.total_price ?? (li.unit_price && li.qty ? li.unit_price * li.qty : 0),
+          skip: false,
+        }
+      })
+
+      setReview({
+        date: data.date_guess || new Date().toISOString().slice(0, 10),
+        supplier: data.supplier_guess || '',
+        rows,
+      })
+    } catch (err) {
+      setScanError(err.message || 'Something went wrong reading that slip.')
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  function updateRow(key, patch) {
+    setReview((r) => ({ ...r, rows: r.rows.map((row) => (row.key === key ? { ...row, ...patch } : row)) }))
+  }
+
+  function cancelReview() {
+    setReview(null)
+    setScanError('')
+    setSaveStatus('')
+  }
+
+  async function approve() {
+    const toSave = review.rows.filter((r) => !r.skip && r.item_id && Number(r.qty) > 0)
+    if (toSave.length === 0) {
+      setSaveStatus('Nothing to save — pick an item for at least one line, or cancel.')
+      return
+    }
+    setSaving(true)
+    setSaveStatus('')
+    const payload = toSave.map((r) => ({
+      item_id: r.item_id,
+      location_id: location,
+      period: toPeriod(review.date),
+      date: review.date,
+      units: Number(r.qty),
+      total_cost_excl_vat: Number(r.total_cost) || 0,
+      supplier: review.supplier || '',
+    }))
+    try {
+      const saved = await sb.insert('food_purchases', payload)
+      onApproved(saved || [])
+      setSaveStatus(`Saved ${saved?.length || toSave.length} purchase${(saved?.length || toSave.length) === 1 ? '' : 's'}.`)
+      setReview(null)
+    } catch (err) {
+      setSaveStatus(`Could not save: ${err.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const itemUnit = (id) => items.find((i) => i.id === id)?.purchase_unit || ''
+
+  return (
+    <div style={styles.card}>
+      <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+        <div style={styles.cardTitle}>Scan a purchase slip</div>
+        {!review && (
+          <button style={styles.buttonGhost} onClick={() => fileInputRef.current?.click()} disabled={scanning}>
+            {scanning ? 'Reading slip…' : 'Scan / photograph slip'}
+          </button>
+        )}
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={handleFile}
+      />
+      {!review && (
+        <div style={{ fontSize: 12, color: colors.muted }}>
+          Take a photo (or upload one) of a supplier delivery slip or invoice — the item list, quantities, and
+          prices below are read automatically. Nothing is saved until you check the list and press Approve.
+        </div>
+      )}
+      {scanError && <div style={{ color: colors.danger, fontSize: 12, marginTop: 8 }}>{scanError}</div>}
+
+      {review && (
+        <div style={{ marginTop: 10 }}>
+          <div style={styles.formGrid}>
+            <div>
+              <label style={styles.label}>Date</label>
+              <input
+                type="date"
+                style={styles.input}
+                value={review.date}
+                onChange={(e) => setReview({ ...review, date: e.target.value })}
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Supplier</label>
+              <input
+                style={styles.input}
+                value={review.supplier}
+                onChange={(e) => setReview({ ...review, supplier: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
+            {review.rows.length} line{review.rows.length === 1 ? '' : 's'} read from the slip. Green = matched
+            automatically — check it's right. Amber = needs a person to pick the item, or tick Skip to leave it
+            out. Double-check quantities are in each item's purchase unit before approving.
+          </div>
+
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>On slip</th>
+                  <th style={styles.th}>Item</th>
+                  <th style={styles.th}>Qty</th>
+                  <th style={styles.th}>Unit</th>
+                  <th style={styles.th}>Total cost</th>
+                  <th style={styles.th}>Skip</th>
+                </tr>
+              </thead>
+              <tbody>
+                {review.rows.map((row) => (
+                  <tr key={row.key} style={row.skip ? { opacity: 0.45 } : undefined}>
+                    <td style={styles.td}>
+                      {row.raw_text}
+                      <div>
+                        <span style={styles.badge(row.confident ? 'good' : 'bad')}>
+                          {row.confident ? 'Matched' : 'Check this'}
+                        </span>
+                      </div>
+                    </td>
+                    <td style={styles.td}>
+                      <select
+                        style={{ ...styles.smallInput, width: 170 }}
+                        value={row.item_id}
+                        onChange={(e) => updateRow(row.key, { item_id: e.target.value })}
+                      >
+                        <option value="">
+                          {row.guessName ? `Select item… (AI guess: ${row.guessName})` : 'Select item…'}
+                        </option>
+                        {items.map((it) => (
+                          <option key={it.id} value={it.id}>
+                            {it.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={styles.td}>
+                      <input
+                        type="number"
+                        style={{ ...styles.smallInput, width: 70 }}
+                        value={row.qty}
+                        onChange={(e) => updateRow(row.key, { qty: e.target.value })}
+                      />
+                    </td>
+                    <td style={styles.td}>{itemUnit(row.item_id) || '—'}</td>
+                    <td style={styles.td}>
+                      <input
+                        type="number"
+                        style={{ ...styles.smallInput, width: 90 }}
+                        value={row.total_cost}
+                        onChange={(e) => updateRow(row.key, { total_cost: e.target.value })}
+                      />
+                    </td>
+                    <td style={styles.td}>
+                      <input
+                        type="checkbox"
+                        checked={row.skip}
+                        onChange={(e) => updateRow(row.key, { skip: e.target.checked })}
+                      />
+                    </td>
+                  </tr>
+                ))}
+                {review.rows.length === 0 && (
+                  <tr>
+                    <td style={styles.td} colSpan={6}>
+                      Nothing readable was found on that photo — try again with better lighting, or log purchases
+                      manually below.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ ...styles.row, justifyContent: 'space-between', marginTop: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 12, color: colors.muted }}>{saveStatus}</div>
+            <div style={styles.row}>
+              <button style={styles.buttonGhost} onClick={cancelReview} disabled={saving}>
+                Cancel
+              </button>
+              <button style={styles.button} onClick={approve} disabled={saving}>
+                {saving ? 'Saving…' : 'Approve & save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -1622,8 +1950,10 @@ function PurchasesTab({ items, purchases, location, period, onAdd, onRemove }) {
 
   return (
     <>
+      <SlipScanCard items={items} location={location} onApproved={(rows) => rows.forEach(onAdd)} />
+
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Log a purchase</div>
+        <div style={styles.cardTitle}>Log a purchase manually</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
           Units are in the item's purchase unit (shown in the Items tab).
         </div>
