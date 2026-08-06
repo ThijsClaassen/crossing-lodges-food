@@ -30,13 +30,15 @@ Respond with ONLY valid JSON (no markdown code fences, no commentary before or a
 {
   "supplier_guess": "string or null — the supplier/vendor name printed on the slip, if visible",
   "date_guess": "YYYY-MM-DD or null — the slip's date, if visible",
-  "slip_total": number or null — the grand total printed on the slip, if visible,
+  "slip_total": number or null — the grand total printed on the slip, if visible (whatever VAT treatment it's printed in — don't adjust it),
+  "amounts_include_vat_guess": true, false, or null — true if the line/total amounts on the slip appear to be VAT-inclusive (e.g. a "Total incl VAT" line, a retail-style till slip with no separate ex-VAT column), false if they clearly appear to be VAT-exclusive (e.g. a tax invoice showing "Subtotal (excl VAT)" separately from a VAT line and an incl-VAT grand total), or null if you genuinely can't tell,
+  "vat_rate_guess": number or null — the VAT percentage if explicitly printed on the slip (e.g. 15 for "VAT 15%"), otherwise null,
   "line_items": [
     {
       "raw_text": "string — the item description exactly as printed, cleaned of stray OCR noise",
       "qty": number — quantity/units purchased, default to 1 if not shown separately,
-      "unit_price": number or null — price per unit if shown,
-      "total_price": number — the line total. If only unit_price is shown, compute qty * unit_price. If only total_price is shown, leave unit_price null.
+      "unit_price": number or null — price per unit if shown, in whatever VAT treatment is printed,
+      "total_price": number — the line total, in whatever VAT treatment is printed (don't convert it — that's handled separately). If only unit_price is shown, compute qty * unit_price. If only total_price is shown, leave unit_price null.
     }
   ]
 }
@@ -45,6 +47,7 @@ Rules:
 - Only include real purchasable line items — skip subtotals, tax lines, discounts, and the grand total line itself (that goes in slip_total instead).
 - If a quantity or price is genuinely illegible, make your best reasonable estimate rather than omitting the line, but keep raw_text faithful to what's printed.
 - Numbers must be plain JSON numbers, not strings, and not include currency symbols.
+- Report prices exactly as printed on the slip — do not attempt to add or remove VAT yourself, that's handled by the app afterward based on amounts_include_vat_guess and vat_rate_guess.
 - If the image isn't a purchase slip at all, or nothing is legible, return an empty line_items array.`
 
 export default async function handler(req, res) {

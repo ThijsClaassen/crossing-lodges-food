@@ -184,6 +184,36 @@ conventions from a photo alone. That's exactly why every scanned line goes
 through the review/approve screen instead of saving straight to the
 database — treat it as a fast first draft, not ground truth.
 
+### VAT
+
+`food_purchases.total_cost_excl_vat` — as the column name says — is always
+meant to hold the cost **excluding VAT**, since that's what the
+weighted-average costing engine expects everywhere else in the app
+(manual purchase entry has always required an excl-VAT figure). Most
+supplier slips print prices **including** VAT, so the review screen
+handles the conversion for you:
+
+- **"Slip prices"** defaults to *Include VAT* (the AI also has a go at
+  detecting this from the slip itself — e.g. a printed "Total incl VAT"
+  line — and pre-sets the toggle accordingly, but always double-check it).
+- **VAT rate %** defaults to **15** (South Africa's standard rate) — the
+  AI will use a rate it reads directly off the slip if one's printed,
+  otherwise this default. Editable if a particular supplier's slip uses a
+  different rate.
+- Every line's "Total cost (excl. VAT)" is calculated as
+  `as-printed total ÷ (1 + VAT rate / 100)`, live — a small "as printed:
+  R X" note under each field shows the original figure so you can sanity
+  check the conversion. A line at the bottom of the table also compares
+  the slip's printed grand total (if legible) against the sum of what
+  you're about to approve.
+- If a slip already shows excl-VAT prices (common on some tax invoices
+  that itemize VAT separately), switch "Slip prices" to *Already exclude
+  VAT* — no division happens, the printed figures are used as-is.
+- Changing "Slip prices" or the VAT rate recalculates every line from the
+  original as-printed figure. If you've hand-edited one line's cost, that
+  edit is your last word on that line until you touch the VAT settings
+  again — so set VAT correctly *first*, then fine-tune individual lines.
+
 ## Units: purchase unit vs. recipe unit
 
 Food is bought in bulk (a 5kg bag, a case) but used in small amounts per

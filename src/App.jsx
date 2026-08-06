@@ -100,6 +100,20 @@ function findBestMatch(text, candidates, nameKey = 'name') {
   return { match: best, score: bestScore, confident: bestScore >= MATCH_CONFIDENT }
 }
 
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100
+}
+
+// Slips get read exactly as printed (see the prompt in api/parse-slip.js) —
+// VAT is only added/removed here, client-side, so it's transparent and
+// re-adjustable if the toggle or rate turns out wrong. Each row keeps its
+// original raw_total (as printed) untouched; total_cost is always
+// re-derived from that whenever the VAT settings change.
+function applyVatToRows(rows, pricesIncludeVat, vatRate) {
+  const divisor = pricesIncludeVat ? 1 + (Number(vatRate) || 0) / 100 : 1
+  return rows.map((r) => ({ ...r, total_cost: round2(r.raw_total / divisor) }))
+}
+
 // Reasons an issue can be logged under. This is a WRITE-OFF log only —
 // breakage, expired stock, staff meals, or other losses. Normal cooking
 // usage is never logged transaction-by-transaction here; it's calculated
@@ -1694,8 +1708,13 @@ function SlipScanCard({ items, location, onApproved }) {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Could not read that slip.')
 
-      const rows = (data.line_items || []).map((li, idx) => {
+      const pricesIncludeVat =
+        typeof data.amounts_include_vat_guess === 'boolean' ? data.amounts_include_vat_guess : true
+      const vatRate = data.vat_rate_guess ?? 15
+
+      const rowsRaw = (data.line_items || []).map((li, idx) => {
         const itemMatch = findBestMatch(li.raw_text, items, 'name')
+        const rawTotal = li.total_price ?? (li.unit_price && li.qty ? li.unit_price * li.qty : 0)
         return {
           key: idx,
           raw_text: li.raw_text,
@@ -1703,7 +1722,8 @@ function SlipScanCard({ items, location, onApproved }) {
           confident: itemMatch.confident,
           guessName: itemMatch.match?.name || '',
           qty: li.qty ?? 1,
-          total_cost: li.total_price ?? (li.unit_price && li.qty ? li.unit_price * li.qty : 0),
+          raw_total: rawTotal,
+          total_cost: rawTotal,
           skip: false,
         }
       })
@@ -1711,7 +1731,10 @@ function SlipScanCard({ items, location, onApproved }) {
       setReview({
         date: data.date_guess || new Date().toISOString().slice(0, 10),
         supplier: data.supplier_guess || '',
-        rows,
+        slipTotal: data.slip_total ?? null,
+        pricesIncludeVat,
+        vatRate,
+        rows: applyVatToRows(rowsRaw, pricesIncludeVat, vatRate),
       })
     } catch (err) {
       setScanError(err.message || 'Something went wrong reading that slip.')
@@ -1722,6 +1745,14 @@ function SlipScanCard({ items, location, onApproved }) {
 
   function updateRow(key, patch) {
     setReview((r) => ({ ...r, rows: r.rows.map((row) => (row.key === key ? { ...row, ...patch } : row)) }))
+  }
+
+  function setPricesIncludeVat(val) {
+    setReview((r) => ({ ...r, pricesIncludeVat: val, rows: applyVatToRows(r.rows, val, r.vatRate) }))
+  }
+
+  function setVatRate(val) {
+    setReview((r) => ({ ...r, vatRate: val, rows: applyVatToRows(r.rows, r.pricesIncludeVat, val) }))
   }
 
   function cancelReview() {
@@ -1807,12 +1838,43 @@ function SlipScanCard({ items, location, onApproved }) {
                 onChange={(e) => setReview({ ...review, supplier: e.target.value })}
               />
             </div>
+            <div>
+              <label style={styles.label}>Slip prices</label>
+              <select
+                style={styles.input}
+                value={review.pricesIncludeVat ? 'incl' : 'excl'}
+                onChange={(e) => setPricesIncludeVat(e.target.value === 'incl')}
+              >
+                <option value="incl">Include VAT</option>
+                <option value="excl">Already exclude VAT</option>
+              </select>
+            </div>
+            {review.pricesIncludeVat && (
+              <div>
+                <label style={styles.label}>VAT rate %</label>
+                <input
+                  type="number"
+                  style={styles.input}
+                  value={review.vatRate}
+                  onChange={(e) => setVatRate(e.target.value)}
+                />
+              </div>
+            )}
           </div>
 
           <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
             {review.rows.length} line{review.rows.length === 1 ? '' : 's'} read from the slip. Green = matched
             automatically — check it's right. Amber = needs a person to pick the item, or tick Skip to leave it
-            out. Double-check quantities are in each item's purchase unit before approving.
+            out. Double-check quantities are in each item's purchase unit before approving. This app stores
+            purchase costs <strong>excl. VAT</strong> — "Total cost" below is already the VAT-stripped figure
+            that gets saved; change "Slip prices" or the VAT rate above if it doesn't look right, and every row
+            recalculates. Editing a row's total cost by hand overrides that row only, until the VAT settings
+            change again.
+            {review.slipTotal != null && (
+              <>
+                {' '}Slip total as printed: R {fmt(review.slipTotal)}.
+              </>
+            )}
           </div>
 
           <div style={styles.tableWrap}>
@@ -1823,7 +1885,7 @@ function SlipScanCard({ items, location, onApproved }) {
                   <th style={styles.th}>Item</th>
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Unit</th>
-                  <th style={styles.th}>Total cost</th>
+                  <th style={styles.th}>Total cost (excl. VAT)</th>
                   <th style={styles.th}>Skip</th>
                 </tr>
               </thead>
@@ -1870,6 +1932,11 @@ function SlipScanCard({ items, location, onApproved }) {
                         value={row.total_cost}
                         onChange={(e) => updateRow(row.key, { total_cost: e.target.value })}
                       />
+                      {review.pricesIncludeVat && (
+                        <div style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>
+                          as printed: R {fmt(row.raw_total)}
+                        </div>
+                      )}
                     </td>
                     <td style={styles.td}>
                       <input
@@ -1890,6 +1957,11 @@ function SlipScanCard({ items, location, onApproved }) {
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div style={{ fontSize: 12, color: colors.muted, marginTop: 6 }}>
+            Sum of approved lines (excl. VAT): R{' '}
+            {fmt(review.rows.filter((r) => !r.skip && r.item_id).reduce((s, r) => s + Number(r.total_cost || 0), 0))}
           </div>
 
           <div style={{ ...styles.row, justifyContent: 'space-between', marginTop: 12, flexWrap: 'wrap' }}>
