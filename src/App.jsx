@@ -443,30 +443,97 @@ const styles = {
     marginBottom: 10,
   },
   label: { fontSize: 11, color: colors.muted, marginBottom: 3, display: 'block' },
-  nav: {
+  // Bottom nav is a single "Menu" button (see navMenuButton) rather than a
+  // row of tabs — with 9-10 tabs on some roles, a horizontal-scroll bar
+  // either clips tabs off-screen or needs a swipe gesture nobody discovers
+  // on their own. Tapping the button opens navSheet, a bottom-anchored
+  // list of every tab, so every tab is always one predictable tap away
+  // regardless of how many exist.
+  navBar: {
     position: 'fixed',
     bottom: 0,
     left: 0,
     right: 0,
     background: colors.panel,
     borderTop: `1px solid ${colors.border}`,
-    display: 'flex',
-    overflowX: 'auto',
-    WebkitOverflowScrolling: 'touch',
+    padding: 8,
     zIndex: 10,
+    boxSizing: 'border-box',
   },
-  navItem: (active) => ({
-    flex: '0 0 auto',
-    minWidth: 72,
-    padding: '10px 12px 8px',
-    textAlign: 'center',
-    fontSize: 11,
-    fontWeight: 600,
-    whiteSpace: 'nowrap',
-    color: active ? colors.goldLt : colors.muted,
+  navMenuButton: {
+    width: '100%',
+    maxWidth: 1100,
+    margin: '0 auto',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '11px 14px',
+    borderRadius: 10,
+    border: `1px solid ${colors.gold}`,
+    background: 'rgba(184,147,90,0.12)',
+    color: colors.goldLt,
+    fontWeight: 700,
+    fontSize: 14,
     cursor: 'pointer',
-    background: 'none',
-    border: 'none',
+  },
+  navOverlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.55)',
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
+  navSheet: {
+    width: '100%',
+    maxWidth: 560,
+    maxHeight: '75vh',
+    overflowY: 'auto',
+    background: colors.panel,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    border: `1px solid ${colors.border}`,
+    borderBottom: 'none',
+    boxSizing: 'border-box',
+  },
+  navSheetHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '14px 16px',
+    borderBottom: `1px solid ${colors.border}`,
+    position: 'sticky',
+    top: 0,
+    background: colors.panel,
+  },
+  navSheetTitle: {
+    fontFamily: fonts.heading,
+    fontSize: 18,
+    fontWeight: 600,
+    color: colors.goldLt,
+  },
+  navSheetClose: {
+    padding: '4px 10px',
+    borderRadius: 8,
+    border: `1px solid ${colors.border}`,
+    background: 'transparent',
+    color: colors.cream,
+    fontSize: 14,
+    cursor: 'pointer',
+  },
+  navSheetItem: (active) => ({
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    padding: '14px 16px',
+    borderBottom: `1px solid ${colors.border}`,
+    background: active ? 'rgba(184,147,90,0.12)' : 'none',
+    color: active ? colors.goldLt : colors.cream,
+    fontWeight: active ? 700 : 500,
+    fontSize: 15,
+    cursor: 'pointer',
   }),
   badge: (tone) => ({
     display: 'inline-block',
@@ -593,6 +660,7 @@ export default function App() {
   const [location, setLocation] = useState('ZC')
   const [period, setPeriod] = useState(currentPeriod())
   const [tab, setTab] = useState('dashboard')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
   const [stockPeriods, setStockPeriods] = useState([])
@@ -977,13 +1045,37 @@ export default function App() {
         )}
       </div>
 
-      <div style={styles.nav}>
-        {TABS.map((t) => (
-          <button key={t.id} style={styles.navItem(activeTab === t.id)} onClick={() => setTab(t.id)}>
-            {t.label}
-          </button>
-        ))}
+      <div style={styles.navBar}>
+        <button style={styles.navMenuButton} onClick={() => setMenuOpen(true)}>
+          <span>☰</span>
+          <span>{TABS.find((t) => t.id === activeTab)?.label || 'Menu'}</span>
+        </button>
       </div>
+
+      {menuOpen && (
+        <div style={styles.navOverlay} onClick={() => setMenuOpen(false)}>
+          <div style={styles.navSheet} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.navSheetHeader}>
+              <span style={styles.navSheetTitle}>Menu</span>
+              <button style={styles.navSheetClose} onClick={() => setMenuOpen(false)}>
+                Close
+              </button>
+            </div>
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                style={styles.navSheetItem(activeTab === t.id)}
+                onClick={() => {
+                  setTab(t.id)
+                  setMenuOpen(false)
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

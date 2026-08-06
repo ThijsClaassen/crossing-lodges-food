@@ -306,6 +306,16 @@ A few things worth checking:
   (liquid stock vs. a stock cube in Spices). These are genuinely different
   products and were kept as separate item rows.
 
+## Mobile navigation
+
+Bottom nav is a single "Menu" button, not a row of tabs. With up to 10
+tabs on the Admin role, a horizontal-scroll bar either clipped tabs off
+the edge of the screen or needed a swipe gesture nobody discovered on
+their own — on a phone, several tabs were simply unreachable. Tapping the
+Menu button opens a bottom sheet listing every tab for the current role,
+current one highlighted; tap one to switch and the sheet closes. Scales
+cleanly no matter how many tabs get added later.
+
 ## Known limitations
 
 - **Client-side role gate, not database-enforced** — Admin/Staff both use
