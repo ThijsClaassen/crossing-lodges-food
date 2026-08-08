@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { sb, LOCATIONS, currentPeriod, UNITS } from './sb.js'
 import { colors, fonts } from './theme.js'
 import BarcodeScanner from './BarcodeScanner.jsx'
+import { supabase } from './supabaseClient.js'
+import Login from './Login.jsx'
+import SetPassword from './SetPassword.jsx'
+import { CompanyProvider, useCompany } from './CompanyContext.jsx'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -569,94 +573,99 @@ const STAFF_TABS = [
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
+//
+// Real Supabase Auth session handling (2026-08-08 — Food Stock 3b of the
+// multi-tenant rebuild), replacing the old shared admin/staff password
+// checked against food_access + a localStorage 'food_role' flag. Once a
+// session exists, company/role is resolved by CompanyProvider/useCompany()
+// instead — see CompanyContext.jsx. Same pattern as the Finance Dashboard's
+// App.jsx (same Supabase project, same auth users).
 
-function useAuth() {
-  const [role, setRole] = useState(() => {
-    try {
-      return localStorage.getItem('food_role') || null
-    } catch {
-      return null
-    }
-  })
-
-  function login(r) {
-    try {
-      localStorage.setItem('food_role', r)
-    } catch {
-      /* ignore storage errors */
-    }
-    setRole(r)
-  }
-
-  function logout() {
-    try {
-      localStorage.removeItem('food_role')
-    } catch {
-      /* ignore storage errors */
-    }
-    setRole(null)
-  }
-
-  return { role, login, logout }
+// Supabase puts the link's type ('invite' | 'recovery' | ...) in the URL
+// hash fragment when someone lands back in the app from an email link —
+// read once, synchronously, on first render, before supabase-js has a
+// chance to process and clear it.
+function getAuthHashType() {
+  if (typeof window === 'undefined' || !window.location.hash) return null
+  return new URLSearchParams(window.location.hash.slice(1)).get('type')
 }
 
-function LoginScreen({ onLogin }) {
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [checking, setChecking] = useState(false)
+const authScreenStyle = {
+  fontFamily: fonts.body,
+  background: colors.bg,
+  minHeight: '100vh',
+  color: colors.cream,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
 
-  async function submit(e) {
-    e.preventDefault()
-    if (!password) return
-    setChecking(true)
-    setError('')
-    try {
-      const rows = await sb.select('food_access', { password })
-      if (rows && rows.length) {
-        onLogin(rows[0].role)
-      } else {
-        setError('Incorrect password.')
-      }
-    } catch (err) {
-      setError(`Could not reach the database: ${err.message}`)
-    } finally {
-      setChecking(false)
-    }
-  }
-
+function AuthMessageScreen({ children }) {
   return (
-    <div style={{ ...styles.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <form onSubmit={submit} style={{ ...styles.card, width: 280 }}>
-        <img
-          src="/logo.png"
-          alt=""
-          style={{ height: 56, width: 'auto', display: 'block', margin: '0 auto 12px' }}
-          onError={(e) => (e.target.style.display = 'none')}
-        />
-        <div style={{ ...styles.cardTitle, textAlign: 'center' }}>Crossing Lodges — Food Stock</div>
-        <label style={styles.label}>Password</label>
-        <input
-          type="password"
-          autoFocus
-          style={styles.input}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        {error && <div style={{ color: colors.danger, fontSize: 12, marginTop: 8 }}>{error}</div>}
-        <button type="submit" style={{ ...styles.button, width: '100%', marginTop: 12 }} disabled={checking}>
-          {checking ? 'Checking…' : 'Log in'}
-        </button>
-      </form>
+    <div style={authScreenStyle}>
+      <div style={{ textAlign: 'center', maxWidth: 320 }}>{children}</div>
     </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
-
 export default function App() {
-  const { role, login, logout } = useAuth()
+  // undefined = still checking for an existing session, null = signed out
+  const [session, setSession] = useState(undefined)
+  const [needsPasswordSetup, setNeedsPasswordSetup] = useState(() => {
+    const type = getAuthHashType()
+    return type === 'invite' || type === 'recovery'
+  })
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  if (session === undefined) {
+    return (
+      <AuthMessageScreen>
+        <p>Loading…</p>
+      </AuthMessageScreen>
+    )
+  }
+
+  if (!session) {
+    return <Login />
+  }
+
+  if (needsPasswordSetup) {
+    return <SetPassword onDone={() => setNeedsPasswordSetup(false)} />
+  }
+
+  // key forces CompanyProvider to reload from scratch if a different user
+  // signs in without a full page refresh.
+  return (
+    <CompanyProvider key={session.user.id}>
+      <AuthenticatedApp />
+    </CompanyProvider>
+  )
+}
+
+function AuthenticatedApp() {
+  const {
+    loading: companyLoading,
+    error: companyError,
+    availableCompanies,
+    companyId,
+    companyName,
+    role,
+    switchCompany,
+  } = useCompany()
+
+  async function logout() {
+    await supabase.auth.signOut()
+  }
+
   const [location, setLocation] = useState('ZC')
   const [period, setPeriod] = useState(currentPeriod())
   const [tab, setTab] = useState('dashboard')
@@ -676,13 +685,13 @@ export default function App() {
     setError(null)
     try {
       const [itemsRes, spRes, purRes, issRes, supRes, recRes, ingRes] = await Promise.all([
-        sb.select('food_items', { location_id: location, active: true }, { order: 'category.asc,name.asc' }),
-        sb.select('food_stock_periods', { location_id: location, period }, {}),
-        sb.select('food_purchases', { location_id: location, period }, { order: 'date.asc' }),
-        sb.select('food_issues', { location_id: location, period }, { order: 'date.asc' }),
-        sb.select('food_suppliers', { location_id: location, active: true }, { order: 'name.asc' }),
-        sb.select('food_recipes', { location_id: location, active: true }, { order: 'name.asc' }),
-        sb.select('food_recipe_ingredients', {}, { order: 'created_at.asc' }),
+        sb.select('food_items', { company_id: companyId, location_id: location, active: true }, { order: 'category.asc,name.asc' }),
+        sb.select('food_stock_periods', { company_id: companyId, location_id: location, period }, {}),
+        sb.select('food_purchases', { company_id: companyId, location_id: location, period }, { order: 'date.asc' }),
+        sb.select('food_issues', { company_id: companyId, location_id: location, period }, { order: 'date.asc' }),
+        sb.select('food_suppliers', { company_id: companyId, location_id: location, active: true }, { order: 'name.asc' }),
+        sb.select('food_recipes', { company_id: companyId, location_id: location, active: true }, { order: 'name.asc' }),
+        sb.select('food_recipe_ingredients', { company_id: companyId }, { order: 'created_at.asc' }),
       ])
       setItems(itemsRes || [])
       setStockPeriods(spRes || [])
@@ -701,7 +710,7 @@ export default function App() {
   useEffect(() => {
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location, period])
+  }, [location, period, companyId])
 
   // ---------------------------------------------------------------------------
   // Local (optimistic) state updates — patch just the affected row(s) from
@@ -816,9 +825,9 @@ export default function App() {
   async function startPeriod() {
     const prior = prevPeriod(period)
     const [priorSP, priorPur, priorIss] = await Promise.all([
-      sb.select('food_stock_periods', { location_id: location, period: prior }, {}),
-      sb.select('food_purchases', { location_id: location, period: prior }, {}),
-      sb.select('food_issues', { location_id: location, period: prior }, {}),
+      sb.select('food_stock_periods', { company_id: companyId, location_id: location, period: prior }, {}),
+      sb.select('food_purchases', { company_id: companyId, location_id: location, period: prior }, {}),
+      sb.select('food_issues', { company_id: companyId, location_id: location, period: prior }, {}),
     ])
     const priorSPByItem = {}
     for (const sp of priorSP || []) priorSPByItem[sp.item_id] = sp
@@ -838,6 +847,7 @@ export default function App() {
         )
         const openingUnits = priorMetrics.hasCount ? priorMetrics.closingCount : priorMetrics.theoreticalClosing
         return {
+          company_id: companyId,
           item_id: it.id,
           location_id: location,
           period,
@@ -861,8 +871,39 @@ export default function App() {
 
   const allClosed = stockPeriods.length > 0 && stockPeriods.every((sp) => sp.closed)
 
-  if (!role) {
-    return <LoginScreen onLogin={login} />
+  // Company-access guards — placed here, after every hook above, rather
+  // than before them: React requires the same hooks to run on every render
+  // in the same order, so an early return can't come before a useState.
+  if (companyLoading) {
+    return (
+      <AuthMessageScreen>
+        <p>Loading your account…</p>
+      </AuthMessageScreen>
+    )
+  }
+
+  if (companyError) {
+    return (
+      <AuthMessageScreen>
+        <p style={{ color: colors.danger, marginBottom: 12 }}>Could not load your company access: {companyError}</p>
+        <button style={styles.button} onClick={logout}>
+          Log out
+        </button>
+      </AuthMessageScreen>
+    )
+  }
+
+  if (!companyId) {
+    return (
+      <AuthMessageScreen>
+        <p style={{ marginBottom: 12 }}>
+          Your account isn't linked to any company yet. Contact your administrator to get access.
+        </p>
+        <button style={styles.button} onClick={logout}>
+          Log out
+        </button>
+      </AuthMessageScreen>
+    )
   }
 
   const TABS = role === 'admin' ? ADMIN_TABS : STAFF_TABS
@@ -879,9 +920,22 @@ export default function App() {
               style={{ ...styles.logo, flexShrink: 0 }}
               onError={(e) => (e.target.style.display = 'none')}
             />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>Crossing Lodges — Food Stock</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{companyName} — Food Stock</span>
           </div>
           <div style={{ ...styles.row, flexShrink: 0 }}>
+            {availableCompanies.length > 1 && (
+              <select
+                value={companyId}
+                onChange={(e) => switchCompany(e.target.value)}
+                style={{ ...styles.smallInput, width: 'auto' }}
+              >
+                {availableCompanies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <span style={styles.badge('neutral')}>{role === 'admin' ? 'Admin' : 'Staff'}</span>
             <button style={{ ...styles.pill(false), padding: '4px 10px' }} onClick={logout}>
               Log out
@@ -952,6 +1006,7 @@ export default function App() {
                 items={items}
                 metricsByItem={metricsByItem}
                 location={location}
+                companyId={companyId}
                 suppliers={suppliers}
                 onAdd={addLocalItem}
                 onUpdate={updateLocalItem}
@@ -962,6 +1017,7 @@ export default function App() {
               <SuppliersTab
                 suppliers={suppliers}
                 location={location}
+                companyId={companyId}
                 onAdd={addLocalSupplier}
                 onUpdate={updateLocalSupplier}
                 onRemove={removeLocalSupplier}
@@ -972,6 +1028,7 @@ export default function App() {
                 items={items}
                 metricsByItem={metricsByItem}
                 location={location}
+                companyId={companyId}
                 recipes={recipes}
                 ingredientsByRecipe={ingredientsByRecipe}
                 onAddRecipe={addLocalRecipe}
@@ -996,6 +1053,7 @@ export default function App() {
                 purchases={purchases}
                 suppliers={suppliers}
                 location={location}
+                companyId={companyId}
                 period={period}
                 onAdd={addLocalPurchase}
                 onRemove={removeLocalPurchase}
@@ -1006,6 +1064,7 @@ export default function App() {
                 items={items}
                 issues={issues}
                 location={location}
+                companyId={companyId}
                 period={period}
                 onAdd={addLocalIssue}
                 onRemove={removeLocalIssue}
@@ -1017,6 +1076,7 @@ export default function App() {
                 stockByItem={stockByItem}
                 metricsByItem={metricsByItem}
                 location={location}
+                companyId={companyId}
                 period={period}
                 role={role}
                 onSave={upsertLocalStockPeriods}
@@ -1296,7 +1356,7 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
 // recipe on the Menu tab.
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, onRemove }) {
+function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd, onUpdate, onRemove }) {
   const [form, setForm] = useState({
     name: '',
     category: 'Dry- and other stock',
@@ -1312,7 +1372,12 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
   async function addItem() {
     if (!form.name.trim()) return
     setSaving(true)
-    const [row] = await sb.insert('food_items', { ...form, supplier_id: form.supplier_id || null, location_id: location })
+    const [row] = await sb.insert('food_items', {
+      ...form,
+      company_id: companyId,
+      supplier_id: form.supplier_id || null,
+      location_id: location,
+    })
     setForm({
       name: '',
       category: 'Dry- and other stock',
@@ -1555,14 +1620,14 @@ function ItemsTab({ items, metricsByItem, location, suppliers, onAdd, onUpdate, 
 // to items via food_items.supplier_id.
 // ---------------------------------------------------------------------------
 
-function SuppliersTab({ suppliers, location, onAdd, onUpdate, onRemove }) {
+function SuppliersTab({ suppliers, location, companyId, onAdd, onUpdate, onRemove }) {
   const [form, setForm] = useState({ name: '', contact_name: '', phone: '', email: '', notes: '' })
   const [saving, setSaving] = useState(false)
 
   async function addSupplier() {
     if (!form.name.trim()) return
     setSaving(true)
-    const [row] = await sb.insert('food_suppliers', { ...form, location_id: location })
+    const [row] = await sb.insert('food_suppliers', { ...form, company_id: companyId, location_id: location })
     setForm({ name: '', contact_name: '', phone: '', email: '', notes: '' })
     setSaving(false)
     onAdd(row)
@@ -1774,7 +1839,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
 // conventions from the photo alone.
 // ---------------------------------------------------------------------------
 
-function SlipScanCard({ items, location, onApproved }) {
+function SlipScanCard({ items, location, companyId, onApproved }) {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
@@ -1862,6 +1927,7 @@ function SlipScanCard({ items, location, onApproved }) {
     setSaving(true)
     setSaveStatus('')
     const payload = toSave.map((r) => ({
+      company_id: companyId,
       item_id: r.item_id,
       location_id: location,
       period: toPeriod(review.date),
@@ -2077,7 +2143,7 @@ function SlipScanCard({ items, location, onApproved }) {
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, onRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2091,6 +2157,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
     if (!form.item_id || !form.units) return
     setSaving(true)
     const [row] = await sb.insert('food_purchases', {
+      company_id: companyId,
       item_id: form.item_id,
       location_id: location,
       period: toPeriod(form.date),
@@ -2114,7 +2181,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 
   return (
     <>
-      <SlipScanCard items={items} location={location} onApproved={(rows) => rows.forEach(onAdd)} />
+      <SlipScanCard items={items} location={location} companyId={companyId} onApproved={(rows) => rows.forEach(onAdd)} />
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log a purchase manually</div>
@@ -2216,7 +2283,7 @@ function PurchasesTab({ items, purchases, suppliers, location, period, onAdd, on
 // physical closing count.
 // ---------------------------------------------------------------------------
 
-function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
+function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2230,6 +2297,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
     if (!form.item_id || !form.qty) return
     setSaving(true)
     const [row] = await sb.insert('food_issues', {
+      company_id: companyId,
       item_id: form.item_id,
       location_id: location,
       period: toPeriod(form.date),
@@ -2352,7 +2420,7 @@ function IssuesTab({ items, issues, location, period, onAdd, onRemove }) {
 // Count tab — enter the physical closing stock count (in purchase_unit)
 // ---------------------------------------------------------------------------
 
-function CountTab({ items, stockByItem, metricsByItem, location, period, role, onSave, onLinkItem }) {
+function CountTab({ items, stockByItem, metricsByItem, location, companyId, period, role, onSave, onLinkItem }) {
   const [countedBy, setCountedBy] = useState('')
   const [resetKey, setResetKey] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -2422,6 +2490,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, period, role, o
       const raw = el ? el.value.trim() : ''
       if (raw === '') continue
       rows.push({
+        company_id: companyId,
         item_id: it.id,
         location_id: location,
         period,
@@ -3017,6 +3086,7 @@ function MenuTab({
   items,
   metricsByItem,
   location,
+  companyId,
   recipes,
   ingredientsByRecipe,
   onAddRecipe,
@@ -3031,6 +3101,7 @@ function MenuTab({
     if (!form.name.trim()) return
     setSaving(true)
     const [row] = await sb.insert('food_recipes', {
+      company_id: companyId,
       name: form.name,
       category: form.category,
       portions: Number(form.portions) || 1,
@@ -3091,6 +3162,7 @@ function MenuTab({
           items={items}
           metricsByItem={metricsByItem}
           ingredients={ingredientsByRecipe[r.id] || []}
+          companyId={companyId}
           onRemoveRecipe={removeRecipe}
           onAddIngredient={onAddIngredient}
           onRemoveIngredient={onRemoveIngredient}
@@ -3105,7 +3177,7 @@ function MenuTab({
   )
 }
 
-function RecipeCard({ recipe, items, metricsByItem, ingredients, onRemoveRecipe, onAddIngredient, onRemoveIngredient }) {
+function RecipeCard({ recipe, items, metricsByItem, ingredients, companyId, onRemoveRecipe, onAddIngredient, onRemoveIngredient }) {
   const [addItemId, setAddItemId] = useState(items[0]?.id || '')
   const [addQty, setAddQty] = useState('')
   const [saving, setSaving] = useState(false)
@@ -3124,6 +3196,7 @@ function RecipeCard({ recipe, items, metricsByItem, ingredients, onRemoveRecipe,
     if (!addItemId || !addQty) return
     setSaving(true)
     const [row] = await sb.insert('food_recipe_ingredients', {
+      company_id: companyId,
       recipe_id: recipe.id,
       item_id: addItemId,
       qty_recipe_unit: Number(addQty),

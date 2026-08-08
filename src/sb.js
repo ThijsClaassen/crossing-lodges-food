@@ -2,23 +2,26 @@
 // and crossing-lodges-beverage (small bundle, no SDK version dependency,
 // plain fetch calls against PostgREST).
 //
-// Fill in SUPABASE_URL / SUPABASE_ANON_KEY below with the SAME project used
-// by the ops and beverage apps so all three share one database. You can
-// either hard-code them here or supply them as Vite env vars
-// (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY) — either works, env vars are
-// just easier to keep out of source control.
+// URL/key now live in supabaseClient.js (2026-08-08 — Food Stock 3b of the
+// multi-tenant rebuild), alongside the real Supabase Auth client that login
+// uses. Every request here now carries the logged-in user's own session
+// token (falling back to the anon key only if there's no session yet) —
+// required so RLS's auth.uid() can actually identify who's asking, once 3c
+// rewrites these tables' policies from allow_all to company-scoped. Every
+// call site's own signature (sb.select/insert/upsert/update/remove) is
+// unchanged; only how the request is authenticated changed.
 
-const SUPABASE_URL =
-  import.meta.env.VITE_SUPABASE_URL || 'https://arrendpmuwdhrfwvokhv.supabase.co'
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_e5hLLlXWBVV8NkNUAz3Blg_8oMwP3Wt'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabaseClient.js'
 
 const REST = `${SUPABASE_URL}/rest/v1`
 
-function headers(extra = {}) {
+async function headers(extra = {}) {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
   return {
     apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
     'Content-Type': 'application/json',
     ...extra,
   }
@@ -50,7 +53,7 @@ export const sb = {
     if (opts.select) params.select = opts.select
     if (opts.order) params.order = opts.order
     const res = await fetch(`${REST}/${table}${qs(params)}`, {
-      headers: headers(),
+      headers: await headers(),
     })
     return handle(res)
   },
@@ -58,7 +61,7 @@ export const sb = {
   async insert(table, rows) {
     const res = await fetch(`${REST}/${table}`, {
       method: 'POST',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
       body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
     })
     return handle(res)
@@ -70,7 +73,7 @@ export const sb = {
       `${REST}/${table}?on_conflict=${encodeURIComponent(onConflict)}`,
       {
         method: 'POST',
-        headers: headers({
+        headers: await headers({
           Prefer: 'resolution=merge-duplicates,return=representation',
         }),
         body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
@@ -82,7 +85,7 @@ export const sb = {
   async update(table, filters, patch) {
     const res = await fetch(`${REST}/${table}${qs(filters)}`, {
       method: 'PATCH',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
       body: JSON.stringify(patch),
     })
     return handle(res)
@@ -91,7 +94,7 @@ export const sb = {
   async remove(table, filters) {
     const res = await fetch(`${REST}/${table}${qs(filters)}`, {
       method: 'DELETE',
-      headers: headers({ Prefer: 'return=representation' }),
+      headers: await headers({ Prefer: 'return=representation' }),
     })
     return handle(res)
   },
