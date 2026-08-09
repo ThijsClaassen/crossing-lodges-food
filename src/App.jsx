@@ -334,6 +334,29 @@ const styles = {
     fontFamily: fonts.mono,
     fontSize: 13,
   },
+  // Desktop-only tab row (see the .desktop-tab-row / .mobile-nav-bar media
+  // query injected in the render below) — replaces the always-visible
+  // bottom "Menu" button on screens wide enough that a normal row of tabs
+  // fits without wrapping or clipping.
+  desktopTabRow: {
+    display: 'flex',
+    gap: 4,
+    padding: '0 20px',
+    background: colors.panel,
+    borderBottom: `1px solid ${colors.border}`,
+    overflowX: 'auto',
+  },
+  desktopTab: (active) => ({
+    padding: '12px 16px',
+    fontSize: 13,
+    fontWeight: active ? 700 : 500,
+    color: active ? colors.goldLt : colors.muted,
+    background: 'none',
+    border: 'none',
+    borderBottom: active ? `2px solid ${colors.gold}` : '2px solid transparent',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  }),
   content: { padding: 14, maxWidth: 1100, margin: '0 auto', boxSizing: 'border-box' },
   card: {
     background: colors.panel,
@@ -911,6 +934,19 @@ function AuthenticatedApp() {
 
   return (
     <div style={styles.app}>
+      {/* Responsive nav split: a normal always-visible tab row on screens
+          wide enough to fit one (desktop/tablet), the fixed-bottom "Menu"
+          button + sheet only below 768px where a full tab row would clip or
+          need horizontal scrolling to reach every tab. Same 768px
+          breakpoint used across the other Crossing Lodges apps. */}
+      <style>{`
+        .desktop-tab-row { display: flex; }
+        .mobile-nav-bar { display: none; }
+        @media (max-width: 768px) {
+          .desktop-tab-row { display: none; }
+          .mobile-nav-bar { display: flex; }
+        }
+      `}</style>
       <div style={styles.header}>
         <div style={{ ...styles.row, justifyContent: 'space-between', flexWrap: 'wrap' }}>
           <div style={{ ...styles.headerTitle, minWidth: 0, flexShrink: 1 }}>
@@ -958,6 +994,14 @@ function AuthenticatedApp() {
           />
         </div>
       </div>
+
+      <nav className="desktop-tab-row" style={styles.desktopTabRow}>
+        {TABS.map((t) => (
+          <button key={t.id} style={styles.desktopTab(activeTab === t.id)} onClick={() => setTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </nav>
 
       <div style={styles.content}>
         {error && (
@@ -1105,7 +1149,7 @@ function AuthenticatedApp() {
         )}
       </div>
 
-      <div style={styles.navBar}>
+      <div className="mobile-nav-bar" style={styles.navBar}>
         <button style={styles.navMenuButton} onClick={() => setMenuOpen(true)}>
           <span>☰</span>
           <span>{TABS.find((t) => t.id === activeTab)?.label || 'Menu'}</span>
@@ -1113,7 +1157,7 @@ function AuthenticatedApp() {
       </div>
 
       {menuOpen && (
-        <div style={styles.navOverlay} onClick={() => setMenuOpen(false)}>
+        <div className="mobile-nav-bar" style={{ ...styles.navOverlay, display: undefined }} onClick={() => setMenuOpen(false)}>
           <div style={styles.navSheet} onClick={(e) => e.stopPropagation()}>
             <div style={styles.navSheetHeader}>
               <span style={styles.navSheetTitle}>Menu</span>
