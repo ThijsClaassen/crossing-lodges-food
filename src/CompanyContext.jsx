@@ -4,11 +4,22 @@
 // Supabase project, so companies/user_companies/platform_admins already
 // exist and mean the same thing here; copied over rather than shared as a
 // package since each app is its own deploy.
+//
+// 2026-08-09: also filters by per-app access (user_app_access) — a company
+// only shows up in the switcher here if this account is actually allowed
+// into Food Stock for it. Admins and platform admins always pass. A plain
+// staff account with NO user_app_access rows at all for a company is
+// legacy/unrestricted (predates this feature) and also passes; one with
+// rows only passes if 'food_stock' is explicitly among them. Note this is
+// a UI-level filter, not database-level enforcement — see
+// has_app_access() in add_username_login_and_app_access.sql if that ever
+// needs hardening further.
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { supabase } from './supabaseClient.js'
 
 const CompanyContext = createContext(null)
 const STORAGE_KEY = 'food_company_id'
+const APP_KEY = 'food_stock'
 
 export function CompanyProvider({ children }) {
   const [loading, setLoading] = useState(true)
@@ -32,17 +43,26 @@ export function CompanyProvider({ children }) {
         { data: companies, error: compErr },
         { data: memberships, error: memErr },
         { data: adminRow, error: adminErr },
+        { data: appAccessRows, error: appAccessErr },
       ] = await Promise.all([
         supabase.from('companies').select('id, slug, name, status').order('name'),
         supabase.from('user_companies').select('company_id, role').eq('user_id', user.id),
         supabase.from('platform_admins').select('user_id').eq('user_id', user.id).maybeSingle(),
+        supabase.from('user_app_access').select('company_id, app_key').eq('user_id', user.id),
       ])
       if (compErr) throw compErr
       if (memErr) throw memErr
       if (adminErr) throw adminErr
+      if (appAccessErr) throw appAccessErr
 
       const isPlatformAdmin = !!adminRow
       const roleByCompany = Object.fromEntries((memberships || []).map((m) => [m.company_id, m.role]))
+
+      const appAccessByCompany = {}
+      for (const row of appAccessRows || []) {
+        if (!appAccessByCompany[row.company_id]) appAccessByCompany[row.company_id] = new Set()
+        appAccessByCompany[row.company_id].add(row.app_key)
+      }
 
       const available = (companies || [])
         .map((c) => ({
@@ -53,6 +73,11 @@ export function CompanyProvider({ children }) {
           role: roleByCompany[c.id] || (isPlatformAdmin ? 'admin' : null),
         }))
         .filter((c) => c.role)
+        .filter((c) => {
+          if (isPlatformAdmin || c.role === 'admin') return true
+          const grants = appAccessByCompany[c.id]
+          return !grants || grants.has(APP_KEY)
+        })
 
       setAvailableCompanies(available)
       const stored = localStorage.getItem(STORAGE_KEY)

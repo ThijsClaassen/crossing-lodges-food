@@ -8,6 +8,13 @@ import { colors, fonts } from './theme.js'
 // fires Supabase's own onAuthStateChange event, which App.jsx already
 // listens for. Which company/companies the signed-in user can access is
 // resolved separately, after login, by CompanyContext.jsx.
+//
+// 2026-08-09: also accepts a username instead of an email, for staff an
+// Admin has set up without a real email address (see the Finance
+// Dashboard's Users tab / add_username_login_and_app_access.sql). If the
+// identifier doesn't look like an email, it's resolved to the account's
+// real (possibly synthetic) email via the resolve_username_email() RPC
+// before signing in — Supabase Auth itself still only ever sees an email.
 const styles = {
   screen: {
     fontFamily: fonts.body,
@@ -72,12 +79,29 @@ export default function Login() {
     setError('')
     setLoading(true)
 
-    const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
+    const identifier = email.trim()
+    let loginEmail = identifier
+
+    if (identifier && !identifier.includes('@')) {
+      const { data: resolvedEmail, error: resolveError } = await supabase.rpc('resolve_username_email', {
+        p_username: identifier,
+      })
+      if (resolveError || !resolvedEmail) {
+        setError('Incorrect email/username or password.')
+        setLoading(false)
+        return
+      }
+      loginEmail = resolvedEmail
+    }
+
+    const { error: authError } = await supabase.auth.signInWithPassword({ email: loginEmail, password })
 
     setLoading(false)
 
     if (authError) {
-      setError(authError.message === 'Invalid login credentials' ? 'Incorrect email or password.' : authError.message)
+      setError(
+        authError.message === 'Invalid login credentials' ? 'Incorrect email/username or password.' : authError.message
+      )
     }
   }
 
@@ -91,9 +115,9 @@ export default function Login() {
           onError={(e) => (e.target.style.display = 'none')}
         />
         <div style={styles.title}>Crossing Lodges — Food Stock</div>
-        <label style={styles.label}>Email</label>
+        <label style={styles.label}>Email or username</label>
         <input
-          type="email"
+          type="text"
           style={styles.input}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
