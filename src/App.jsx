@@ -6,6 +6,7 @@ import { supabase } from './supabaseClient.js'
 import Login from './Login.jsx'
 import SetPassword from './SetPassword.jsx'
 import { CompanyProvider, useCompany } from './CompanyContext.jsx'
+import { uploadPurchaseSlip, getSlipUrl } from './slipUpload.js'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -702,12 +703,18 @@ function AuthenticatedApp() {
   const [recipes, setRecipes] = useState([])
   const [recipeIngredients, setRecipeIngredients] = useState([])
   const [error, setError] = useState(null)
+  // Purchase slip photos (2026-08-12) — keyed by purchase_slips.id, loaded
+  // company-wide (not period-filtered, since a slip photo isn't tied to a
+  // reporting period the way purchases are) for the "View slip" links and
+  // the manual Attach flow.
+  const [slips, setSlips] = useState({})
+  const onSlipAttached = (slip) => { if (slip) setSlips((s) => ({ ...s, [slip.id]: slip })) }
 
   async function loadAll() {
     setLoading(true)
     setError(null)
     try {
-      const [itemsRes, spRes, purRes, issRes, supRes, recRes, ingRes] = await Promise.all([
+      const [itemsRes, spRes, purRes, issRes, supRes, recRes, ingRes, slipRes] = await Promise.all([
         sb.select('food_items', { company_id: companyId, location_id: location, active: true }, { order: 'category.asc,name.asc' }),
         sb.select('food_stock_periods', { company_id: companyId, location_id: location, period }, {}),
         sb.select('food_purchases', { company_id: companyId, location_id: location, period }, { order: 'date.asc' }),
@@ -715,6 +722,7 @@ function AuthenticatedApp() {
         sb.select('food_suppliers', { company_id: companyId, location_id: location, active: true }, { order: 'name.asc' }),
         sb.select('food_recipes', { company_id: companyId, location_id: location, active: true }, { order: 'name.asc' }),
         sb.select('food_recipe_ingredients', { company_id: companyId }, { order: 'created_at.asc' }),
+        sb.select('purchase_slips', { company_id: companyId, app: 'food' }, {}),
       ])
       setItems(itemsRes || [])
       setStockPeriods(spRes || [])
@@ -723,6 +731,9 @@ function AuthenticatedApp() {
       setSuppliers(supRes || [])
       setRecipes(recRes || [])
       setRecipeIngredients(ingRes || [])
+      const slipMap = {}
+      ;(slipRes || []).forEach((s) => { slipMap[s.id] = s })
+      setSlips(slipMap)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -772,6 +783,9 @@ function AuthenticatedApp() {
 
   function addLocalPurchase(row) {
     setPurchases((prev) => [...prev, row])
+  }
+  function updateLocalPurchase(row) {
+    setPurchases((prev) => prev.map((p) => (p.id === row.id ? row : p)))
   }
   function removeLocalPurchase(id) {
     setPurchases((prev) => prev.filter((p) => p.id !== id))
@@ -1100,7 +1114,10 @@ function AuthenticatedApp() {
                 companyId={companyId}
                 period={period}
                 onAdd={addLocalPurchase}
+                onUpdate={updateLocalPurchase}
                 onRemove={removeLocalPurchase}
+                slips={slips}
+                onSlipAttached={onSlipAttached}
               />
             )}
             {activeTab === 'issues' && (
@@ -1883,7 +1900,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
 // conventions from the photo alone.
 // ---------------------------------------------------------------------------
 
-function SlipScanCard({ items, location, companyId, onApproved }) {
+function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached }) {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
@@ -1936,6 +1953,7 @@ function SlipScanCard({ items, location, companyId, onApproved }) {
         pricesIncludeVat,
         vatRate,
         rows: applyVatToRows(rowsRaw, pricesIncludeVat, vatRate),
+        photoBlob: resized,
       })
     } catch (err) {
       setScanError(err.message || 'Something went wrong reading that slip.')
@@ -1970,20 +1988,32 @@ function SlipScanCard({ items, location, companyId, onApproved }) {
     }
     setSaving(true)
     setSaveStatus('')
-    const payload = toSave.map((r) => ({
-      company_id: companyId,
-      item_id: r.item_id,
-      location_id: location,
-      period: toPeriod(review.date),
-      date: review.date,
-      units: Number(r.qty),
-      total_cost_excl_vat: Number(r.total_cost) || 0,
-      supplier: review.supplier || '',
-    }))
     try {
+      // Upload the photo first — that's the actual compliance record, and
+      // it's independent of whichever items got matched below.
+      const slip = await uploadPurchaseSlip({
+        companyId,
+        locationId: location,
+        blob: review.photoBlob,
+        supplierGuess: review.supplier,
+        dateGuess: review.date,
+        slipTotalGuess: review.slipTotal,
+      })
+      const payload = toSave.map((r) => ({
+        company_id: companyId,
+        item_id: r.item_id,
+        location_id: location,
+        period: toPeriod(review.date),
+        date: review.date,
+        units: Number(r.qty),
+        total_cost_excl_vat: Number(r.total_cost) || 0,
+        supplier: review.supplier || '',
+        slip_id: slip.id,
+      }))
       const saved = await sb.insert('food_purchases', payload)
       onApproved(saved || [])
-      setSaveStatus(`Saved ${saved?.length || toSave.length} purchase${(saved?.length || toSave.length) === 1 ? '' : 's'}.`)
+      onSlipAttached(slip)
+      setSaveStatus(`Saved ${saved?.length || toSave.length} purchase${(saved?.length || toSave.length) === 1 ? '' : 's'} and attached the slip photo.`)
       setReview(null)
     } catch (err) {
       setSaveStatus(`Could not save: ${err.message}`)
@@ -2183,36 +2213,109 @@ function SlipScanCard({ items, location, companyId, onApproved }) {
   )
 }
 
+// Manual fallback for when the scanner can't read a slip (or wasn't used) —
+// just uploads the photo and links it, no OCR. Used both for a brand-new
+// hand-entered purchase (attaches while saving) and for an already-saved
+// purchase row that didn't get a slip at the time (attaches after the fact).
+function AttachSlipButton({ companyId, locationId, purchaseId, onAttached, label = 'Attach slip' }) {
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef(null)
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setUploading(true)
+    try {
+      const resized = await resizeImageFile(file)
+      const slip = await uploadPurchaseSlip({ companyId, locationId, blob: resized })
+      if (purchaseId) await sb.update('food_purchases', { id: purchaseId }, { slip_id: slip.id })
+      onAttached(slip, purchaseId)
+    } catch (err) {
+      alert('Could not attach the slip: ' + err.message)
+    } finally {
+      setUploading(false)
+    }
+  }
+  return (
+    <>
+      <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleFile} />
+      <button style={styles.buttonGhost} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+        {uploading ? 'Uploading…' : label}
+      </button>
+    </>
+  )
+}
+
+function ViewSlipLink({ storagePath }) {
+  const [loading, setLoading] = useState(false)
+  async function open() {
+    setLoading(true)
+    try {
+      const url = await getSlipUrl(storagePath)
+      window.open(url, '_blank', 'noopener')
+    } catch (err) {
+      alert('Could not open the slip: ' + err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+  return (
+    <button style={styles.buttonGhost} onClick={open} disabled={loading}>
+      {loading ? '…' : 'View slip'}
+    </button>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Purchases tab
 // ---------------------------------------------------------------------------
 
-function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onUpdate, onRemove, slips, onSlipAttached }) {
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
     units: '',
     total_cost_excl_vat: '',
     supplier: '',
+    pendingSlipBlob: null,
+    pendingSlipName: '',
   })
   const [saving, setSaving] = useState(false)
+
+  async function pickSlipFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const resized = await resizeImageFile(file)
+    setForm((f) => ({ ...f, pendingSlipBlob: resized, pendingSlipName: file.name }))
+  }
 
   async function addPurchase() {
     if (!form.item_id || !form.units) return
     setSaving(true)
-    const [row] = await sb.insert('food_purchases', {
-      company_id: companyId,
-      item_id: form.item_id,
-      location_id: location,
-      period: toPeriod(form.date),
-      date: form.date,
-      units: Number(form.units),
-      total_cost_excl_vat: Number(form.total_cost_excl_vat || 0),
-      supplier: form.supplier,
-    })
-    setForm({ ...form, units: '', total_cost_excl_vat: '', supplier: '' })
-    setSaving(false)
-    onAdd(row)
+    try {
+      let slipId = null
+      if (form.pendingSlipBlob) {
+        const slip = await uploadPurchaseSlip({ companyId, locationId: location, blob: form.pendingSlipBlob })
+        slipId = slip.id
+        onSlipAttached(slip)
+      }
+      const [row] = await sb.insert('food_purchases', {
+        company_id: companyId,
+        item_id: form.item_id,
+        location_id: location,
+        period: toPeriod(form.date),
+        date: form.date,
+        units: Number(form.units),
+        total_cost_excl_vat: Number(form.total_cost_excl_vat || 0),
+        supplier: form.supplier,
+        slip_id: slipId,
+      })
+      setForm({ ...form, units: '', total_cost_excl_vat: '', supplier: '', pendingSlipBlob: null, pendingSlipName: '' })
+      onAdd(row)
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function removePurchase(id) {
@@ -2225,7 +2328,13 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
 
   return (
     <>
-      <SlipScanCard items={items} location={location} companyId={companyId} onApproved={(rows) => rows.forEach(onAdd)} />
+      <SlipScanCard
+        items={items}
+        location={location}
+        companyId={companyId}
+        onApproved={(rows) => rows.forEach(onAdd)}
+        onSlipAttached={onSlipAttached}
+      />
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log a purchase manually</div>
@@ -2270,6 +2379,13 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
             <input style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
           </div>
         </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={styles.label}>Slip photo (optional — use if you didn't use Scan above)</label>
+          <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile} />
+          {form.pendingSlipName && (
+            <div style={{ fontSize: 11, color: colors.ok, marginTop: 4 }}>Attached: {form.pendingSlipName}</div>
+          )}
+        </div>
         <button style={styles.button} onClick={addPurchase} disabled={saving}>
           {saving ? 'Saving…' : 'Add purchase'}
         </button>
@@ -2286,6 +2402,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
               <th style={styles.th}>Units</th>
               <th style={styles.th}>Cost</th>
               <th style={styles.th}>Supplier</th>
+              <th style={styles.th}>Slip</th>
               <th style={styles.th}></th>
             </tr>
           </thead>
@@ -2298,6 +2415,18 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
                 <td style={styles.tdNum}>{fmt(p.total_cost_excl_vat)}</td>
                 <td style={styles.td}>{p.supplier || '—'}</td>
                 <td style={styles.td}>
+                  {p.slip_id && slips[p.slip_id] ? (
+                    <ViewSlipLink storagePath={slips[p.slip_id].storage_path} />
+                  ) : (
+                    <AttachSlipButton
+                      companyId={companyId}
+                      locationId={location}
+                      purchaseId={p.id}
+                      onAttached={(slip) => { onSlipAttached(slip); onUpdate({ ...p, slip_id: slip.id }) }}
+                    />
+                  )}
+                </td>
+                <td style={styles.td}>
                   <button style={styles.buttonDanger} onClick={() => removePurchase(p.id)}>
                     Delete
                   </button>
@@ -2306,7 +2435,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
             ))}
             {purchases.length === 0 && (
               <tr>
-                <td style={styles.td} colSpan={6}>
+                <td style={styles.td} colSpan={7}>
                   No purchases logged yet.
                 </td>
               </tr>
