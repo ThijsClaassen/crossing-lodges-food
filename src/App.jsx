@@ -2469,6 +2469,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
   }
 
   const itemName = (id) => items.find((i) => i.id === id)?.name || '—'
+  const itemUnit = (id) => items.find((i) => i.id === id)?.purchase_unit || ''
 
   return (
     <>
@@ -2477,7 +2478,8 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
           'Service' is normal kitchen use — dishes cooked and served. Everything else (Breakage,
           Expired, Staff, Other) is a write-off, tracked separately on the Dashboard. Both feed the
-          Usage tab's expected-stock calculation.
+          Usage tab's expected-stock calculation. Quantities are in each item's purchase unit (same
+          as Purchases and Count), not its recipe unit.
         </div>
         <div style={styles.formGrid}>
           <div>
@@ -2485,7 +2487,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
             <select style={styles.input} value={form.item_id} onChange={(e) => setForm({ ...form, item_id: e.target.value })}>
               {items.map((it) => (
                 <option key={it.id} value={it.id}>
-                  {it.name}
+                  {it.name} ({it.purchase_unit})
                 </option>
               ))}
             </select>
@@ -2495,7 +2497,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
             <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           </div>
           <div>
-            <label style={styles.label}>Qty issued</label>
+            <label style={styles.label}>Qty issued ({itemUnit(form.item_id) || '—'})</label>
             <input type="number" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
           </div>
           <div>
@@ -2537,7 +2539,9 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
               <tr key={i.id}>
                 <td style={styles.td}>{i.date}</td>
                 <td style={styles.td}>{itemName(i.item_id)}</td>
-                <td style={styles.tdNum}>{fmt(i.qty, 1)}</td>
+                <td style={styles.tdNum}>
+                  {fmt(i.qty, 1)} {itemUnit(i.item_id)}
+                </td>
                 <td style={styles.td}>
                   {!i.reason || i.reason === 'Service' ? (
                     i.reason || 'Service'
