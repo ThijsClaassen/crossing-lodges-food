@@ -119,17 +119,14 @@ function applyVatToRows(rows, pricesIncludeVat, vatRate) {
   return rows.map((r) => ({ ...r, total_cost: round2(r.raw_total / divisor) }))
 }
 
-// Reasons an issue can be logged under. This is a WRITE-OFF log only —
-// breakage, expired stock, staff meals, or other losses. Normal cooking
-// usage is never logged transaction-by-transaction here; it's calculated
-// automatically (see usageUnits/usageValue below) from opening stock +
-// purchases − logged write-offs − the physical closing count. ("Service"
-// used to be an option for logging normal use one dish at a time; removed
-// since kitchen usage doesn't fit a fixed reason-tracking log. Historical
-// rows with reason 'Service' from before this change are still handled
-// correctly by the fallback below — they're treated as non-write-off,
-// exactly as they always were.)
-const ISSUE_REASONS = ['Breakage', 'Expired', 'Staff', 'Other']
+// Reasons an issue can be logged under. 'Service' is normal kitchen use —
+// dishes cooked and served — logged the same way a write-off is, just
+// under a different reason. Everything else (Breakage/Expired/Staff/Other)
+// is a write-off, tracked separately on the Dashboard. Same model as the
+// beverage app's Issues tab. (Historical rows with reason 'Service' or no
+// reason at all, from before this change, are treated the same way by the
+// fallback in computeMetrics below — they always counted as normal use.)
+const ISSUE_REASONS = ['Service', 'Breakage', 'Expired', 'Staff', 'Other']
 
 function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   const opening = stockPeriod?.opening_units ?? 0
@@ -138,10 +135,9 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   const purchaseCost = itemPurchases.reduce((s, p) => s + Number(p.total_cost_excl_vat || 0), 0)
   const issuedTotal = itemIssues.reduce((s, i) => s + Number(i.qty || 0), 0)
 
-  // Legacy fallback: any old row logged under 'Service' (or with no reason
-  // at all) before write-offs became the only logging option is still
-  // treated as normal use, not a write-off — so historical periods don't
-  // silently change meaning under this update.
+  // 'Service' (or no reason at all, for old rows logged before this reason
+  // existed) is normal use, not a write-off — everything else counts as a
+  // write-off below.
   const serviceUnits = itemIssues
     .filter((i) => !i.reason || i.reason === 'Service')
     .reduce((s, i) => s + Number(i.qty || 0), 0)
@@ -155,24 +151,17 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
   const serviceValue = serviceUnits * weightedAvgCost
   const writeOffValue = writeOffUnits * weightedAvgCost
 
-  // "Expected" stock = opening + purchases − logged write-offs. Nothing
-  // here accounts for normal cooking use — that's the whole point: usage
-  // is discovered by comparing this to the physical count, not logged.
+  // "Expected" stock = opening + purchases − ALL logged issues (service +
+  // write-offs). Usage is now an input (what staff log on the Issues tab),
+  // not something inferred from the count — the count exists to check the
+  // log, not to define usage. Variance = counted − expected: the genuine
+  // discrepancy once normal use is properly logged (positive = more on
+  // the shelf than the log predicts, negative = shrinkage/unlogged use).
   const theoreticalClosing = opening + purchaseUnits - issuedTotal
   const closingCount = stockPeriod?.closing_count_units
   const hasCount = closingCount !== null && closingCount !== undefined
   const varianceUnits = hasCount ? closingCount - theoreticalClosing : null
   const varianceValue = hasCount ? varianceUnits * weightedAvgCost : null
-
-  // Usage — the headline number for the simple model: how much stock was
-  // actually used this period, worked out from the gap between what
-  // "should" be on hand (expected) and what was physically counted, with
-  // any logged write-offs already excluded above. This is exactly
-  // -varianceUnits, kept as its own named field since "usage" (expected,
-  // positive) and "variance" (a counting discrepancy) mean different
-  // things even though the arithmetic is identical.
-  const usageUnits = hasCount ? theoreticalClosing - closingCount : null
-  const usageValue = hasCount ? usageUnits * weightedAvgCost : null
 
   const reorderQty =
     theoreticalClosing <= Number(item.min_units || 0)
@@ -195,8 +184,6 @@ function computeMetrics(item, stockPeriod, itemPurchases, itemIssues) {
     hasCount,
     varianceUnits,
     varianceValue,
-    usageUnits,
-    usageValue,
     reorderQty,
   }
 }
@@ -210,8 +197,10 @@ function aggregateValues(items, metricsByItem) {
     actualValue: 0,
     varianceValue: 0,
     issuedValue: 0,
-    usageValue: 0,
-    usageUnits: 0,
+    serviceValue: 0,
+    serviceUnits: 0,
+    writeOffValue: 0,
+    writeOffUnits: 0,
     countedItems: 0,
   }
   for (const it of items) {
@@ -221,11 +210,11 @@ function aggregateValues(items, metricsByItem) {
     totals.actualValue += (m.hasCount ? m.closingCount : m.theoreticalClosing) * m.weightedAvgCost
     totals.varianceValue += m.hasCount ? m.varianceValue : 0
     totals.issuedValue += m.issuedTotal * m.weightedAvgCost
-    if (m.hasCount) {
-      totals.usageValue += m.usageValue
-      totals.usageUnits += m.usageUnits
-      totals.countedItems += 1
-    }
+    totals.serviceValue += m.serviceValue
+    totals.serviceUnits += m.serviceUnits
+    totals.writeOffValue += m.writeOffValue
+    totals.writeOffUnits += m.writeOffUnits
+    if (m.hasCount) totals.countedItems += 1
   }
   return totals
 }
@@ -243,8 +232,6 @@ function aggregateBySupplier(items, metricsByItem) {
     serviceValue: 0,
     writeOffUnits: 0,
     writeOffValue: 0,
-    usageUnits: 0,
-    usageValue: 0,
     countedItems: 0,
     itemCount: 0,
   })
@@ -262,11 +249,7 @@ function aggregateBySupplier(items, metricsByItem) {
     bucket.serviceValue += m.serviceValue
     bucket.writeOffUnits += m.writeOffUnits
     bucket.writeOffValue += m.writeOffValue
-    if (m.hasCount) {
-      bucket.usageUnits += m.usageUnits
-      bucket.usageValue += m.usageValue
-      bucket.countedItems += 1
-    }
+    if (m.hasCount) bucket.countedItems += 1
     bucket.itemCount += 1
   }
 
@@ -583,14 +566,14 @@ const ADMIN_TABS = [
   { id: 'menu', label: 'Menu' },
   { id: 'opening', label: 'Opening' },
   { id: 'purchases', label: 'Purchases' },
-  { id: 'issues', label: 'Write-offs' },
+  { id: 'issues', label: 'Issues' },
   { id: 'count', label: 'Count' },
   { id: 'variance', label: 'Usage' },
   { id: 'orders', label: 'Orders' },
 ]
 
 const STAFF_TABS = [
-  { id: 'issues', label: 'Write-offs' },
+  { id: 'issues', label: 'Issues' },
   { id: 'count', label: 'Count' },
 ]
 
@@ -1227,13 +1210,12 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
     () =>
       items
         .map((it) => ({ item: it, m: metricsByItem[it.id] }))
-        .filter((x) => x.m && x.m.hasCount)
-        .sort((a, b) => b.m.usageUnits - a.m.usageUnits),
+        .filter((x) => x.m)
+        .sort((a, b) => b.m.serviceUnits - a.m.serviceUnits),
     [items, metricsByItem]
   )
-  const fastest = ranked.filter((x) => x.m.usageUnits > 0).slice(0, 10)
-  const notMoving = ranked.filter((x) => x.m.usageUnits <= 0)
-  const notYetCounted = items.filter((it) => !metricsByItem[it.id]?.hasCount).length
+  const fastest = ranked.filter((x) => x.m.serviceUnits > 0).slice(0, 10)
+  const notMoving = ranked.filter((x) => x.m.serviceUnits <= 0)
 
   return (
     <>
@@ -1262,33 +1244,32 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
                 <strong>R {fmt(totals.actualValue)}</strong>
               </td>
               <td style={styles.tdNum}>
-                <span style={styles.badge(totals.usageValue < 0 ? 'bad' : 'neutral')}>
-                  R {fmt(totals.usageValue)}
-                </span>
+                <strong>R {fmt(totals.serviceValue)}</strong>
               </td>
               <td style={styles.tdNum}>
-                <strong>R {fmt(totals.issuedValue)}</strong>
+                <span style={styles.badge(totals.writeOffValue > 0 ? 'bad' : 'neutral')}>
+                  R {fmt(totals.writeOffValue)}
+                </span>
               </td>
             </tr>
           </tbody>
         </table>
         </div>
         <div style={{ fontSize: 12, color: colors.muted, marginTop: 8 }}>
-          "Usage this period" is calculated automatically — opening stock + purchases − logged
-          write-offs − the physical closing count — so nothing needs to be logged dish by dish. It
-          only reflects items that have had a physical count this period ({totals.countedItems} of{' '}
-          {items.length} so far); items not yet counted fall back to the expected estimate in both
-          value columns. A negative usage figure means more was counted than should be on hand —
-          worth double-checking that count.
+          "Usage this period" is 'Service' issues logged on the Issues tab — usage is now an input,
+          not something worked out after the fact. "Write-offs logged" is everything else logged
+          there (breakage, expired stock, staff usage, other). The physical count checks the log via
+          the Usage tab's Variance column, rather than defining usage itself —{' '}
+          {totals.countedItems} of {items.length} items have a count this period.
         </div>
       </div>
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>By supplier — {period}</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          "Usage" is the same auto-calculated figure as above, rolled up by the supplier of each
-          item (only counted items contribute). "Write-offs" is everything logged on the Write-offs
-          tab — breakage, expired stock, staff usage, other.
+          "Usage" is 'Service' issues logged on the Issues tab, rolled up by the supplier of each
+          item. "Write-offs" is everything else logged there — breakage, expired stock, staff usage,
+          other.
         </div>
         <div style={styles.tableWrap}>
         <table style={styles.table}>
@@ -1309,8 +1290,8 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
                 <td style={styles.td}>{row.name}</td>
                 <td style={styles.tdNum}>{row.itemCount}</td>
                 <td style={styles.tdNum}>R {fmt(row.actualValue)}</td>
-                <td style={styles.tdNum}>{fmt(row.usageUnits, 1)}</td>
-                <td style={styles.tdNum}>R {fmt(row.usageValue)}</td>
+                <td style={styles.tdNum}>{fmt(row.serviceUnits, 1)}</td>
+                <td style={styles.tdNum}>R {fmt(row.serviceValue)}</td>
                 <td style={styles.tdNum}>{fmt(row.writeOffUnits, 1)}</td>
                 <td style={styles.tdNum}>
                   {row.writeOffValue > 0 ? (
@@ -1337,8 +1318,7 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
       <div style={styles.card}>
         <div style={styles.cardTitle}>Highest usage this period</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
-          Ranked by the auto-calculated usage figure, for items that have had a physical count this
-          period{notYetCounted > 0 ? ` (${notYetCounted} item${notYetCounted === 1 ? '' : 's'} not yet counted this period aren't shown here)` : ''}.
+          Ranked by 'Service' issues logged on the Issues tab.
         </div>
         <div style={styles.tableWrap}>
         <table style={styles.table}>
@@ -1355,14 +1335,14 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
               <tr key={item.id}>
                 <td style={styles.td}>{item.name}</td>
                 <td style={styles.td}>{item.category}</td>
-                <td style={styles.tdNum}>{fmt(m.usageUnits, 1)}</td>
-                <td style={styles.tdNum}>R {fmt(m.usageValue)}</td>
+                <td style={styles.tdNum}>{fmt(m.serviceUnits, 1)}</td>
+                <td style={styles.tdNum}>R {fmt(m.serviceValue)}</td>
               </tr>
             ))}
             {fastest.length === 0 && (
               <tr>
                 <td style={styles.td} colSpan={4}>
-                  No counted items with usage yet this period.
+                  No usage logged yet this period.
                 </td>
               </tr>
             )}
@@ -1372,10 +1352,10 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
       </div>
 
       <div style={styles.card}>
-        <div style={styles.cardTitle}>No usage since last count ({notMoving.length})</div>
+        <div style={styles.cardTitle}>No usage logged this period ({notMoving.length})</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
-          Counted this period with zero or negative calculated usage — candidates to reconsider on
-          the menu, or worth a second look if the count seems off.
+          No 'Service' issues logged yet — candidates to reconsider on the menu, or worth a check on
+          the Issues tab if they should have moved.
         </div>
         <div style={styles.tableWrap}>
         <table style={styles.table}>
@@ -1395,7 +1375,7 @@ function DashboardTab({ items, metricsByItem, period, suppliers, supplierById })
             {notMoving.length === 0 && (
               <tr>
                 <td style={styles.td} colSpan={2}>
-                  Nothing counted this period yet.
+                  Nothing yet this period.
                 </td>
               </tr>
             )}
@@ -2449,11 +2429,10 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
 }
 
 // ---------------------------------------------------------------------------
-// Issues tab (labeled "Write-offs" in the UI) — a log for stock lost to
-// breakage, spoilage, staff meals, or other waste ONLY. Normal cooking
-// usage is never logged here — it's calculated automatically on the Usage
-// tab from opening stock + purchases − whatever's logged here − the
-// physical closing count.
+// Issues tab — log everything stock leaves for: normal kitchen use
+// ('Service') as well as write-offs (Breakage/Expired/Staff/Other). This
+// log is now the input the Usage tab uses to work out expected stock —
+// same model as the beverage app's Issues tab.
 // ---------------------------------------------------------------------------
 
 function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove }) {
@@ -2494,11 +2473,11 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
   return (
     <>
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Log a write-off</div>
+        <div style={styles.cardTitle}>Log issued stock</div>
         <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          Only log stock lost to breakage, spoilage, staff meals, or other waste here. Don't log
-          normal cooking usage — that's worked out automatically (opening + purchases − write-offs −
-          closing count) on the Usage tab once you enter a physical count.
+          'Service' is normal kitchen use — dishes cooked and served. Everything else (Breakage,
+          Expired, Staff, Other) is a write-off, tracked separately on the Dashboard. Both feed the
+          Usage tab's expected-stock calculation.
         </div>
         <div style={styles.formGrid}>
           <div>
@@ -2516,7 +2495,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
             <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           </div>
           <div>
-            <label style={styles.label}>Qty written off</label>
+            <label style={styles.label}>Qty issued</label>
             <input type="number" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
           </div>
           <div>
@@ -2535,12 +2514,12 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
           </div>
         </div>
         <button style={styles.button} onClick={addIssue} disabled={saving}>
-          {saving ? 'Saving…' : 'Add write-off'}
+          {saving ? 'Saving…' : 'Add issue'}
         </button>
       </div>
 
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Write-offs in {period}</div>
+        <div style={styles.cardTitle}>Issues in {period}</div>
         <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
@@ -2577,7 +2556,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
             {issues.length === 0 && (
               <tr>
                 <td style={styles.td} colSpan={6}>
-                  No write-offs logged yet.
+                  No issues logged yet.
                 </td>
               </tr>
             )}
@@ -2736,7 +2715,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
             <th style={styles.th}>Item</th>
             {showTheoretical && <th style={styles.th}>Expected</th>}
             <th style={styles.th}>Counted</th>
-            {showTheoretical && <th style={styles.th}>Usage</th>}
+            {showTheoretical && <th style={styles.th}>Variance</th>}
           </tr>
         </thead>
         <tbody>
@@ -2770,7 +2749,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
                 {showTheoretical && (
                   <td style={styles.td}>
                     {m?.hasCount ? (
-                      <span style={styles.badge(m.usageUnits < 0 ? 'bad' : 'neutral')}>{fmt(m.usageUnits, 1)}</span>
+                      <span style={styles.badge(m.varianceUnits < 0 ? 'bad' : 'good')}>{fmt(m.varianceUnits, 1)}</span>
                     ) : (
                       '—'
                     )}
@@ -2795,16 +2774,13 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
 }
 
 // ---------------------------------------------------------------------------
-// Variance tab (labeled "Usage" in the UI) — the core costing engine
-// output for the simple opening + purchases − closing-count model. Usage
-// is calculated automatically per item: Expected (opening + purchases −
-// logged write-offs) minus the physical count. There's no separate
-// "theoretical vs. actual" discrepancy check here the way the beverage app
-// has — the count IS how usage is discovered, not something compared
-// against an independently-tracked consumption log. A negative usage
-// figure (more counted than expected) is the one thing worth flagging,
-// since it means either a write-off wasn't logged, a purchase wasn't
-// logged, or the count itself needs a second look.
+// Usage tab (internally VarianceTab — id/label stay "Usage", not renamed
+// to match the beverage app's "Variance") — expected stock is now driven
+// by what's logged on the Issues tab: Expected = opening + purchased −
+// issued (service + write-offs combined). Variance = Counted − Expected,
+// the genuine discrepancy once normal use is properly logged, surfaced
+// here for the first time (previously dead code, since "usage" used to be
+// an unlogged residual computed only after a count).
 // ---------------------------------------------------------------------------
 
 function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
@@ -2812,10 +2788,11 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
     (acc, it) => {
       const m = metricsByItem[it.id]
       acc.purchaseCost += m?.purchaseCost || 0
-      acc.usageValue += m?.hasCount ? m.usageValue : 0
+      acc.issuedValue += m ? m.issuedTotal * m.weightedAvgCost : 0
+      acc.varianceValue += m?.hasCount ? m.varianceValue : 0
       return acc
     },
-    { purchaseCost: 0, usageValue: 0 }
+    { purchaseCost: 0, issuedValue: 0, varianceValue: 0 }
   )
 
   return (
@@ -2827,11 +2804,13 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
         </button>
       </div>
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-        Total purchases this period: R {fmt(totals.purchaseCost)} · Total usage value: R {fmt(totals.usageValue)}
+        Total purchases this period: R {fmt(totals.purchaseCost)} · Total issued value: R{' '}
+        {fmt(totals.issuedValue)} · Total variance value: R {fmt(totals.varianceValue)}
       </div>
       <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-        Usage = Expected (opening + purchased − write-offs) − Counted. It's calculated automatically
-        once an item has a physical count this period — nothing needs to be logged dish by dish.
+        Expected = Opening + Purchased − Issued (Service + write-offs logged on the Issues tab).
+        Variance = Counted − Expected — a discrepancy worth a second look, not something to expect
+        every period.
       </div>
       <div style={styles.tableWrap}>
       <table style={styles.table}>
@@ -2840,12 +2819,12 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
             <th style={styles.th}>Item</th>
             <th style={styles.th}>Opening</th>
             <th style={styles.th}>Purchased</th>
-            <th style={styles.th}>Write-offs</th>
+            <th style={styles.th}>Issued</th>
             <th style={styles.th}>W/Avg cost</th>
             <th style={styles.th}>Expected</th>
             <th style={styles.th}>Counted</th>
-            <th style={styles.th}>Usage (units)</th>
-            <th style={styles.th}>Usage (value)</th>
+            <th style={styles.th}>Variance (units)</th>
+            <th style={styles.th}>Variance (value)</th>
           </tr>
         </thead>
         <tbody>
@@ -2863,12 +2842,12 @@ function VarianceTab({ items, metricsByItem, allClosed, onClosePeriod }) {
                 <td style={styles.td}>{m.hasCount ? fmt(m.closingCount, 1) : '—'}</td>
                 <td style={styles.td}>
                   {m.hasCount ? (
-                    <span style={styles.badge(m.usageUnits < 0 ? 'bad' : 'neutral')}>{fmt(m.usageUnits, 1)}</span>
+                    <span style={styles.badge(m.varianceUnits < 0 ? 'bad' : 'good')}>{fmt(m.varianceUnits, 1)}</span>
                   ) : (
                     'Pending count'
                   )}
                 </td>
-                <td style={styles.tdNum}>{m.hasCount ? `R ${fmt(m.usageValue)}` : '—'}</td>
+                <td style={styles.tdNum}>{m.hasCount ? `R ${fmt(m.varianceValue)}` : '—'}</td>
               </tr>
             )
           })}
