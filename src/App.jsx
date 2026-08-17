@@ -1407,6 +1407,8 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
     supplier_id: '',
     min_units: 0,
     max_units: 0,
+    order_pack_size: 1,
+    order_pack_label: '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -1418,6 +1420,8 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
       company_id: companyId,
       supplier_id: form.supplier_id || null,
       location_id: location,
+      order_pack_size: Number(form.order_pack_size) || 1,
+      order_pack_label: form.order_pack_label || null,
     })
     setForm({
       name: '',
@@ -1428,6 +1432,8 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
       supplier_id: '',
       min_units: 0,
       max_units: 0,
+      order_pack_size: 1,
+      order_pack_label: '',
     })
     setSaving(false)
     onAdd(row)
@@ -1526,6 +1532,23 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
               onChange={(e) => setForm({ ...form, max_units: e.target.value })}
             />
           </div>
+          <div>
+            <label style={styles.label}>Order pack size (purchase units per pack)</label>
+            <input
+              type="number"
+              style={styles.input}
+              value={form.order_pack_size}
+              onChange={(e) => setForm({ ...form, order_pack_size: e.target.value })}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Pack label (optional, e.g. "6-pack")</label>
+            <input
+              style={styles.input}
+              value={form.order_pack_label}
+              onChange={(e) => setForm({ ...form, order_pack_label: e.target.value })}
+            />
+          </div>
         </div>
         <button style={styles.button} onClick={addItem} disabled={saving}>
           {saving ? 'Adding…' : 'Add item'}
@@ -1548,6 +1571,8 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
               <th style={styles.th}>Purchase unit</th>
               <th style={styles.th}>Recipe unit</th>
               <th style={styles.th}>Recipe units/purchase</th>
+              <th style={styles.th}>Order pack size</th>
+              <th style={styles.th}>Pack label</th>
               <th style={styles.th}>Barcode</th>
               <th style={styles.th}>Min</th>
               <th style={styles.th}>Max</th>
@@ -1611,6 +1636,23 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
                       style={styles.smallInput}
                       defaultValue={it.conversion_factor ?? 1}
                       onBlur={(e) => updateItem(it.id, { conversion_factor: Number(e.target.value) || 1 })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="number"
+                      style={styles.smallInput}
+                      defaultValue={it.order_pack_size ?? 1}
+                      onBlur={(e) => updateItem(it.id, { order_pack_size: Number(e.target.value) || 1 })}
+                    />
+                  </td>
+                  <td style={styles.td}>
+                    <input
+                      type="text"
+                      style={styles.smallInput}
+                      defaultValue={it.order_pack_label || ''}
+                      placeholder="e.g. 6-pack"
+                      onBlur={(e) => updateItem(it.id, { order_pack_label: e.target.value.trim() || null })}
                     />
                   </td>
                   <td style={styles.td}>
@@ -2255,12 +2297,23 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
     units: '',
+    packs: '',
     total_cost_excl_vat: '',
     supplier: '',
     pendingSlipBlob: null,
     pendingSlipName: '',
   })
   const [saving, setSaving] = useState(false)
+
+  // Order/delivery packs (2026-08-17) — a supplier slip usually lists "qty
+  // 2" meaning 2 six-packs, not 2 cans. order_pack_size on the item (set on
+  // the Items tab) is how many purchase_units are in one delivered pack;
+  // typing a Packs count here just multiplies into the real Units field
+  // that's actually stored — Units stays the source of truth so nothing
+  // downstream (usage/variance) needs to know packs exist. Direct edits to
+  // Units still work as before for items with no pack size set.
+  const selectedItem = items.find((i) => i.id === form.item_id)
+  const packSize = Number(selectedItem?.order_pack_size || 1)
 
   async function pickSlipFile(e) {
     const file = e.target.files?.[0]
@@ -2291,7 +2344,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         supplier: form.supplier,
         slip_id: slipId,
       })
-      setForm({ ...form, units: '', total_cost_excl_vat: '', supplier: '', pendingSlipBlob: null, pendingSlipName: '' })
+      setForm({ ...form, units: '', packs: '', total_cost_excl_vat: '', supplier: '', pendingSlipBlob: null, pendingSlipName: '' })
       onAdd(row)
     } finally {
       setSaving(false)
@@ -2336,13 +2389,33 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
             <label style={styles.label}>Date</label>
             <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
           </div>
+          {packSize > 1 && (
+            <div>
+              <label style={styles.label}>
+                Packs ({selectedItem.order_pack_label || `${packSize}-pack`})
+              </label>
+              <input
+                type="number"
+                style={styles.input}
+                value={form.packs}
+                onChange={(e) => {
+                  const packs = e.target.value
+                  setForm((f) => ({
+                    ...f,
+                    packs,
+                    units: packs === '' ? f.units : String(Number(packs) * packSize),
+                  }))
+                }}
+              />
+            </div>
+          )}
           <div>
             <label style={styles.label}>Units ({itemUnit(form.item_id) || '—'})</label>
             <input
               type="number"
               style={styles.input}
               value={form.units}
-              onChange={(e) => setForm({ ...form, units: e.target.value })}
+              onChange={(e) => setForm({ ...form, units: e.target.value, packs: '' })}
             />
           </div>
           <div>
@@ -2356,7 +2429,14 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
           </div>
           <div>
             <label style={styles.label}>Supplier</label>
-            <input style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} />
+            <select style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })}>
+              <option value="">Select supplier…</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
         <div style={{ marginBottom: 10 }}>
@@ -2437,13 +2517,22 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
 
 function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
-    item_id: items[0]?.id || '',
+    item_id: '',
     date: new Date().toISOString().slice(0, 10),
     qty: '',
     reason: ISSUE_REASONS[0],
     note: '',
   })
   const [saving, setSaving] = useState(false)
+
+  // Category-then-item picker (2026-08-17) — the item list got too long to
+  // scroll through directly, so pick a category first (same two-step
+  // pattern used for materials in the Maintenance app) and only then choose
+  // from items within it.
+  const [category, setCategory] = useState('')
+  const categories = useMemo(() => [...new Set(items.map((it) => it.category).filter(Boolean))].sort(), [items])
+  const uncategorisedCount = items.filter((it) => !it.category).length
+  const itemsInCat = category ? items.filter((it) => (category === '__none__' ? !it.category : it.category === category)) : []
 
   async function addIssue() {
     if (!form.item_id || !form.qty) return
@@ -2458,7 +2547,8 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
       reason: form.reason,
       note: form.note,
     })
-    setForm({ ...form, qty: '', note: '' })
+    setForm({ ...form, item_id: '', qty: '', note: '' })
+    setCategory('')
     setSaving(false)
     onAdd(row)
   }
@@ -2483,9 +2573,31 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
         </div>
         <div style={styles.formGrid}>
           <div>
+            <label style={styles.label}>Category</label>
+            <select
+              style={styles.input}
+              value={category}
+              onChange={(e) => { setCategory(e.target.value); setForm({ ...form, item_id: '' }) }}
+            >
+              <option value="">Select category…</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+              {uncategorisedCount > 0 && <option value="__none__">Uncategorised</option>}
+            </select>
+          </div>
+          <div>
             <label style={styles.label}>Item</label>
-            <select style={styles.input} value={form.item_id} onChange={(e) => setForm({ ...form, item_id: e.target.value })}>
-              {items.map((it) => (
+            <select
+              style={styles.input}
+              value={form.item_id}
+              onChange={(e) => setForm({ ...form, item_id: e.target.value })}
+              disabled={!category}
+            >
+              <option value="">{category ? 'Select item…' : 'Pick a category first'}</option>
+              {itemsInCat.map((it) => (
                 <option key={it.id} value={it.id}>
                   {it.name} ({it.purchase_unit})
                 </option>
