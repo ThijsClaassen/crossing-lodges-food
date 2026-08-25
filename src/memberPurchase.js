@@ -38,3 +38,70 @@ export async function logMemberPurchase({ companyId, memberId, locationId, charg
   ])
   if (error) throw error
 }
+
+// --- "Bill to Member" pending queue (2026-08-25) ---------------------------
+// A slip-scan line ticked "Bill to Member" doesn't bill anyone immediately —
+// it drops into member_pending_charges (staged here, shown as a checkbox
+// list in MemberPurchaseCard) until a person picks a member and bills the
+// selected lines as a batch. Point: a slip with both lodge items and
+// member items can be scanned once, nothing gets forgotten, and nothing
+// attaches to the wrong member before someone's actually reviewed it.
+// amount here is always VAT-INCLUSIVE (see SlipScanCard's
+// vatInclusiveAmount) — member purchases are never stripped of VAT.
+
+export async function listPendingCharges({ companyId }) {
+  const { data, error } = await supabase
+    .from('member_pending_charges')
+    .select('*')
+    .eq('company_id', companyId)
+    .eq('source_app', 'food')
+    .order('created_at')
+  if (error) throw error
+  return data || []
+}
+
+export async function addPendingCharges({ companyId, locationId, slipId, rows }) {
+  if (!rows.length) return
+  const payload = rows.map((r) => ({
+    company_id: companyId,
+    source_app: 'food',
+    location_id: locationId || null,
+    charge_date: r.chargeDate,
+    description: r.description,
+    qty: r.qty ?? null,
+    amount: Number(r.amount),
+    slip_id: slipId || null,
+  }))
+  const { error } = await supabase.from('member_pending_charges').insert(payload)
+  if (error) throw error
+}
+
+export async function billPendingCharges({ companyId, memberId, locationId, pendingIds }) {
+  if (!pendingIds.length) return
+  const { data: pending, error: fetchErr } = await supabase
+    .from('member_pending_charges')
+    .select('*')
+    .in('id', pendingIds)
+  if (fetchErr) throw fetchErr
+
+  const charges = (pending || []).map((p) => ({
+    company_id: companyId,
+    member_id: memberId,
+    location_id: p.location_id || locationId || null,
+    charge_date: p.charge_date,
+    description: p.description,
+    amount: p.amount,
+  }))
+  if (charges.length) {
+    const { error: insertErr } = await supabase.from('member_charges').insert(charges)
+    if (insertErr) throw insertErr
+  }
+
+  const { error: deleteErr } = await supabase.from('member_pending_charges').delete().in('id', pendingIds)
+  if (deleteErr) throw deleteErr
+}
+
+export async function deletePendingCharge({ id }) {
+  const { error } = await supabase.from('member_pending_charges').delete().eq('id', id)
+  if (error) throw error
+}
