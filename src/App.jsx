@@ -7,6 +7,7 @@ import Login from './Login.jsx'
 import SetPassword from './SetPassword.jsx'
 import { CompanyProvider, useCompany } from './CompanyContext.jsx'
 import { uploadPurchaseSlip, getSlipUrl } from './slipUpload.js'
+import { listMembers as listBillingMembers, logMemberPurchase } from './memberPurchase.js'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -2341,7 +2342,98 @@ function ViewSlipLink({ storagePath }) {
 // Purchases tab
 // ---------------------------------------------------------------------------
 
+// Quick-log a purchase straight to a member's account instead of this
+// app's own stock — see memberPurchase.js. Only rendered when
+// memberBillingEnabled is true for the current company (Demo only today).
+function MemberPurchaseCard({ companyId, location }) {
+  const [members, setMembers] = useState([])
+  const [form, setForm] = useState({ member_id: '', date: new Date().toISOString().slice(0, 10), description: '', amount: '' })
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    listBillingMembers({ companyId })
+      .then((m) => {
+        setMembers(m)
+        setForm((f) => ({ ...f, member_id: f.member_id || m[0]?.id || '' }))
+      })
+      .catch(() => setMembers([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId])
+
+  async function handleSubmit() {
+    setMessage('')
+    if (!form.member_id || !form.description || !form.amount) {
+      setMessage('Pick a member and fill in description + amount.')
+      return
+    }
+    setSaving(true)
+    try {
+      await logMemberPurchase({
+        companyId,
+        memberId: form.member_id,
+        locationId: location,
+        chargeDate: form.date,
+        description: form.description,
+        amount: form.amount,
+      })
+      setForm((f) => ({ ...f, description: '', amount: '' }))
+      setMessage('Logged to their member account.')
+    } catch (err) {
+      setMessage(err.message || 'Could not save.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (members.length === 0) return null
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardTitle}>Member Purchase</div>
+      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+        Bought on a member's behalf (e.g. groceries) — goes straight to their account, not this app's stock.
+      </div>
+      <div style={styles.formGrid}>
+        <div>
+          <label style={styles.label}>Member</label>
+          <select style={styles.input} value={form.member_id} onChange={(e) => setForm({ ...form, member_id: e.target.value })}>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={styles.label}>Date</label>
+          <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+        </div>
+        <div>
+          <label style={styles.label}>Description</label>
+          <input
+            type="text"
+            style={styles.input}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            placeholder="e.g. Groceries — Spar"
+          />
+        </div>
+        <div>
+          <label style={styles.label}>Amount</label>
+          <input type="number" style={styles.input} value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+        </div>
+      </div>
+      <button style={styles.button} onClick={handleSubmit} disabled={saving}>
+        {saving ? 'Saving…' : 'Log to member account'}
+      </button>
+      {message && <div style={{ fontSize: 12, marginTop: 6 }}>{message}</div>}
+    </div>
+  )
+}
+
 function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onUpdate, onRemove, slips, onSlipAttached }) {
+  const { memberBillingEnabled } = useCompany()
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: new Date().toISOString().slice(0, 10),
@@ -2417,6 +2509,8 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         onApproved={(rows) => rows.forEach(onAdd)}
         onSlipAttached={onSlipAttached}
       />
+
+      {memberBillingEnabled && <MemberPurchaseCard companyId={companyId} location={location} />}
 
       <div style={styles.card}>
         <div style={styles.cardTitle}>Log a purchase manually</div>
