@@ -1285,6 +1285,128 @@ function CollapsibleCard({ title, defaultOpen = false, headerExtra, children }) 
   )
 }
 
+// Type-to-search dropdown (2026-08-25) — same value/onChange contract as a
+// plain <select> (value = selected option's `value`, onChange receives the
+// new value), but lets staff type a few letters to filter instead of
+// scrolling a long native list. Used for item/supplier/member/recipe-style
+// pickers with many options; short toggles (VAT include/exclude, Yes/No,
+// Skip, category filters) stay as plain <select>s since search doesn't
+// help there. `options` is [{ value, label }].
+function SearchableSelect({ value, onChange, options, placeholder = 'Select…', style, inputStyle, disabled }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [highlight, setHighlight] = useState(0)
+  const wrapRef = useRef(null)
+
+  const selected = options.find((o) => o.value === value)
+  const q = query.trim().toLowerCase()
+  const filtered = q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options
+
+  useEffect(() => {
+    function onDocDown(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+    document.addEventListener('mousedown', onDocDown)
+    return () => document.removeEventListener('mousedown', onDocDown)
+  }, [])
+
+  function choose(opt) {
+    onChange(opt.value)
+    setQuery('')
+    setOpen(false)
+  }
+
+  function handleKeyDown(e) {
+    if (!open) {
+      if (e.key === 'ArrowDown' || e.key === 'Enter') {
+        setOpen(true)
+        setHighlight(0)
+      }
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setHighlight((h) => Math.min(h + 1, filtered.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlight((h) => Math.max(h - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (filtered[highlight]) choose(filtered[highlight])
+    } else if (e.key === 'Escape') {
+      setOpen(false)
+      setQuery('')
+    }
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', ...style }}>
+      <input
+        type="text"
+        style={inputStyle || styles.input}
+        placeholder={selected && !open ? selected.label : placeholder}
+        value={open ? query : selected ? selected.label : ''}
+        onFocus={() => {
+          setOpen(true)
+          setQuery('')
+          setHighlight(0)
+        }}
+        onChange={(e) => {
+          setQuery(e.target.value)
+          setOpen(true)
+          setHighlight(0)
+        }}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+      />
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: 2,
+            zIndex: 50,
+            background: colors.panel,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 8,
+            maxHeight: 220,
+            overflowY: 'auto',
+            boxShadow: '0 8px 24px rgba(0,0,0,.35)',
+          }}
+        >
+          {filtered.length === 0 && (
+            <div style={{ padding: '7px 10px', fontSize: 12, color: colors.muted }}>No matches</div>
+          )}
+          {filtered.map((o, i) => (
+            <div
+              key={o.value}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                choose(o)
+              }}
+              onMouseEnter={() => setHighlight(i)}
+              style={{
+                padding: '7px 10px',
+                fontSize: 13,
+                cursor: 'pointer',
+                color: colors.cream,
+                background: i === highlight ? 'rgba(184,147,90,.14)' : 'transparent',
+              }}
+            >
+              {o.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard tab — Admin only: stock value, supplier breakdown, and which
 // items are moving fastest / not at all this period.
@@ -1602,18 +1724,12 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
           </div>
           <div>
             <label style={styles.label}>Supplier</label>
-            <select
-              style={styles.input}
+            <SearchableSelect
               value={form.supplier_id}
-              onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
-            >
-              <option value="">No supplier</option>
-              {suppliers.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setForm({ ...form, supplier_id: v })}
+              options={suppliers.map((s) => ({ value: s.id, label: s.name }))}
+              placeholder="No supplier"
+            />
           </div>
           <div>
             <label style={styles.label}>Min units</label>
@@ -1691,18 +1807,14 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
                   <td style={styles.td}>{it.name}</td>
                   <td style={styles.td}>{it.category}</td>
                   <td style={styles.td}>
-                    <select
-                      style={styles.smallInput}
-                      defaultValue={it.supplier_id || ''}
-                      onChange={(e) => updateItem(it.id, { supplier_id: e.target.value || null })}
-                    >
-                      <option value="">No supplier</option>
-                      {suppliers.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
+                    <SearchableSelect
+                      value={it.supplier_id || ''}
+                      onChange={(v) => updateItem(it.id, { supplier_id: v || null })}
+                      options={suppliers.map((s) => ({ value: s.id, label: s.name }))}
+                      placeholder="No supplier"
+                      inputStyle={styles.smallInput}
+                      style={{ minWidth: 120 }}
+                    />
                   </td>
                   <td style={styles.td}>
                     <select
@@ -2286,20 +2398,14 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
                       </div>
                     </td>
                     <td style={styles.td}>
-                      <select
-                        style={{ ...styles.smallInput, width: 170 }}
+                      <SearchableSelect
                         value={row.item_id}
-                        onChange={(e) => updateRow(row.key, { item_id: e.target.value })}
-                      >
-                        <option value="">
-                          {row.guessName ? `Select item… (AI guess: ${row.guessName})` : 'Select item…'}
-                        </option>
-                        {items.map((it) => (
-                          <option key={it.id} value={it.id}>
-                            {it.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(v) => updateRow(row.key, { item_id: v })}
+                        options={items.map((it) => ({ value: it.id, label: it.name }))}
+                        placeholder={row.guessName ? `Select item… (AI guess: ${row.guessName})` : 'Select item…'}
+                        inputStyle={{ ...styles.smallInput, width: 170 }}
+                        style={{ width: 170 }}
+                      />
                     </td>
                     <td style={styles.td}>
                       <input
@@ -2605,13 +2711,13 @@ function MemberPurchaseCard({ companyId, location, refreshSignal }) {
             </div>
           ))}
           <div style={{ ...styles.row, gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-            <select style={styles.input} value={billMemberId} onChange={(e) => setBillMemberId(e.target.value)}>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              value={billMemberId}
+              onChange={setBillMemberId}
+              options={members.map((m) => ({ value: m.id, label: m.name }))}
+              placeholder="Select member…"
+              style={{ minWidth: 180 }}
+            />
             <button style={styles.button} onClick={billSelected} disabled={billing || selected.size === 0} type="button">
               {billing ? 'Billing…' : `Bill ${selected.size || ''} selected to member`}
             </button>
@@ -2623,13 +2729,12 @@ function MemberPurchaseCard({ companyId, location, refreshSignal }) {
       <div style={styles.formGrid}>
         <div>
           <label style={styles.label}>Member</label>
-          <select style={styles.input} value={form.member_id} onChange={(e) => setForm({ ...form, member_id: e.target.value })}>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={form.member_id}
+            onChange={(v) => setForm({ ...form, member_id: v })}
+            options={members.map((m) => ({ value: m.id, label: m.name }))}
+            placeholder="Select member…"
+          />
         </div>
         <div>
           <label style={styles.label}>Date</label>
@@ -2751,13 +2856,12 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         <div style={styles.formGrid}>
           <div>
             <label style={styles.label}>Item</label>
-            <select style={styles.input} value={form.item_id} onChange={(e) => setForm({ ...form, item_id: e.target.value })}>
-              {items.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.name} ({it.purchase_unit})
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              value={form.item_id}
+              onChange={(v) => setForm({ ...form, item_id: v })}
+              options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
+              placeholder="Select item…"
+            />
           </div>
           <div>
             <label style={styles.label}>Date</label>
@@ -2803,14 +2907,12 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
           </div>
           <div>
             <label style={styles.label}>Supplier</label>
-            <select style={styles.input} value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })}>
-              <option value="">Select supplier…</option>
-              {suppliers.map((s) => (
-                <option key={s.id} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              value={form.supplier}
+              onChange={(v) => setForm({ ...form, supplier: v })}
+              options={suppliers.map((s) => ({ value: s.name, label: s.name }))}
+              placeholder="Select supplier…"
+            />
           </div>
         </div>
         <div style={{ marginBottom: 10 }}>
@@ -2963,19 +3065,13 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
           </div>
           <div>
             <label style={styles.label}>Item</label>
-            <select
-              style={styles.input}
+            <SearchableSelect
               value={form.item_id}
-              onChange={(e) => setForm({ ...form, item_id: e.target.value })}
+              onChange={(v) => setForm({ ...form, item_id: v })}
+              options={itemsInCat.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
+              placeholder={category ? 'Select item…' : 'Pick a category first'}
               disabled={!category}
-            >
-              <option value="">{category ? 'Select item…' : 'Pick a category first'}</option>
-              {itemsInCat.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.name} ({it.purchase_unit})
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <div>
             <label style={styles.label}>Date</label>
@@ -3181,14 +3277,13 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
         <div style={styles.banner}>
           <span>Unknown barcode ({linkingBarcode}) — link it to an item:</span>
           <div style={{ ...styles.row, flexWrap: 'wrap' }}>
-            <select style={styles.input} value={linkItemId} onChange={(e) => setLinkItemId(e.target.value)}>
-              <option value="">Choose item…</option>
-              {items.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.name}
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              value={linkItemId}
+              onChange={setLinkItemId}
+              options={items.map((it) => ({ value: it.id, label: it.name }))}
+              placeholder="Choose item…"
+              style={{ minWidth: 180 }}
+            />
             <button style={styles.button} onClick={linkBarcode} disabled={!linkItemId || linking}>
               {linking ? 'Linking…' : 'Link'}
             </button>
@@ -3595,18 +3690,13 @@ function MenuOrderPlanner({ items, metricsByItem, recipes, ingredientsByRecipe, 
         </div>
         {planRows.map((row, i) => (
           <div key={i} style={{ ...styles.row, gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-            <select
-              style={{ ...styles.input, flex: '2 1 200px' }}
+            <SearchableSelect
               value={row.recipe_id}
-              onChange={(e) => updatePlanRow(i, { recipe_id: e.target.value })}
-            >
-              <option value="">Choose menu…</option>
-              {recipes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => updatePlanRow(i, { recipe_id: v })}
+              options={recipes.map((r) => ({ value: r.id, label: r.name }))}
+              placeholder="Choose menu…"
+              style={{ flex: '2 1 200px' }}
+            />
             <input
               type="number"
               placeholder="Guests"
@@ -3907,13 +3997,12 @@ function RecipeCard({ recipe, items, metricsByItem, ingredients, companyId, onRe
       <div style={{ ...styles.formGrid, marginTop: 10 }}>
         <div>
           <label style={styles.label}>Add ingredient</label>
-          <select style={styles.input} value={addItemId} onChange={(e) => setAddItemId(e.target.value)}>
-            {items.map((it) => (
-              <option key={it.id} value={it.id}>
-                {it.name} ({it.recipe_unit})
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={addItemId}
+            onChange={setAddItemId}
+            options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.recipe_unit})` }))}
+            placeholder="Select item…"
+          />
         </div>
         <div>
           <label style={styles.label}>Qty ({items.find((it) => it.id === addItemId)?.recipe_unit || '—'})</label>
