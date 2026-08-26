@@ -7,6 +7,7 @@ import Login from './Login.jsx'
 import SetPassword from './SetPassword.jsx'
 import { CompanyProvider, useCompany } from './CompanyContext.jsx'
 import { uploadPurchaseSlip, getSlipUrl } from './slipUpload.js'
+import { syncYocoSales, learnYocoItemMatch } from './foodSalesEngine.js'
 import {
   listMembers as listBillingMembers,
   logMemberPurchase,
@@ -600,6 +601,7 @@ const ADMIN_TABS = [
   { id: 'count', label: 'Count' },
   { id: 'variance', label: 'Usage' },
   { id: 'orders', label: 'Orders' },
+  { id: 'yoco', label: 'Yoco Sync' },
 ]
 
 const STAFF_TABS = [
@@ -1237,6 +1239,16 @@ function AuthenticatedApp() {
                 supplierById={supplierById}
                 recipes={recipes}
                 ingredientsByRecipe={ingredientsByRecipe}
+              />
+            )}
+            {activeTab === 'yoco' && role === 'admin' && (
+              <YocoSyncTab
+                items={items}
+                recipes={recipes}
+                recipeIngredients={recipeIngredients}
+                location={location}
+                companyId={companyId}
+                onSynced={loadAll}
               />
             )}
           </>
@@ -4315,5 +4327,229 @@ function RecipeCard({ recipe, items, metricsByItem, ingredients, companyId, onRe
         Cost per portion ({fmt(portions, portions % 1 === 0 ? 0 : 2)}): <strong>R {fmt(perPortion)}</strong>
       </div>
     </CollapsibleCard>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Yoco Sync (2026-08-26, "Yoco Phase 2") — pulls completed Yoco POS sales for
+// a date range and turns each one into 'Service' issues, so kitchen stock
+// comes down on its own instead of being logged by hand.
+//
+// Unlike the Beverage/Curio version, a Yoco name here usually resolves to a
+// RECIPE, which explodes into one issue per ingredient (scaled by portions) —
+// selling a burger draws down mince, buns and cheese, not "a burger". Names
+// sold as-is (bottled water, crisps) resolve to a plain item instead. The
+// unmatched panel therefore lets you teach either kind of target. Engine
+// lives in foodSalesEngine.js. Admin-only, manual on purpose.
+// ---------------------------------------------------------------------------
+function defaultSyncDates() {
+  const end = new Date().toISOString().slice(0, 10)
+  const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  return { start, end }
+}
+
+function YocoSyncTab({ items, recipes, recipeIngredients, location, companyId, onSynced }) {
+  const [{ start, end }, setDates] = useState(defaultSyncDates)
+  const [syncing, setSyncing] = useState(false)
+  const [result, setResult] = useState(null)
+  const [syncError, setSyncError] = useState('')
+
+  // Per-row teach state, keyed by Yoco item name. `selections` holds a
+  // "recipe:<id>" or "item:<id>" string so one dropdown can offer both
+  // kinds of target without a second control.
+  const [selections, setSelections] = useState({})
+  const [savingMatch, setSavingMatch] = useState(null)
+  const [matchErrors, setMatchErrors] = useState({})
+
+  const targetOptions = useMemo(() => {
+    const recipeOpts = [...(recipes || [])]
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      .map((r) => ({ value: `recipe:${r.id}`, label: `Recipe — ${r.name}` }))
+    const itemOpts = [...(items || [])]
+      .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.name || '').localeCompare(b.name || ''))
+      .map((it) => ({ value: `item:${it.id}`, label: `Item — ${it.category ? `${it.category} / ` : ''}${it.name}` }))
+    return [...recipeOpts, ...itemOpts]
+  }, [recipes, items])
+
+  function defaultSelectionFor(u) {
+    if (u.suggestedRecipeId) return `recipe:${u.suggestedRecipeId}`
+    if (u.suggestedItemId) return `item:${u.suggestedItemId}`
+    return ''
+  }
+
+  async function runSync() {
+    setSyncing(true)
+    setSyncError('')
+    setResult(null)
+    try {
+      const res = await syncYocoSales({
+        companyId,
+        locationId: location,
+        start,
+        end,
+        items,
+        recipes,
+        recipeIngredients,
+      })
+      setResult(res)
+      onSynced?.()
+    } catch (err) {
+      setSyncError(err.message || 'Sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // Saves the taught match, then re-runs the sync so every already-seen sale
+  // with this name in the current range becomes issues immediately.
+  async function saveMatch(u) {
+    const raw = selections[u.name] ?? defaultSelectionFor(u)
+    if (!raw) return
+    const [kind, id] = raw.split(':')
+    setSavingMatch(u.name)
+    setMatchErrors((e) => ({ ...e, [u.name]: '' }))
+    try {
+      await learnYocoItemMatch({
+        companyId,
+        yocoItemName: u.name,
+        recipeId: kind === 'recipe' ? id : null,
+        itemId: kind === 'item' ? id : null,
+      })
+    } catch (err) {
+      setSavingMatch(null)
+      setMatchErrors((e) => ({ ...e, [u.name]: err.message || 'Could not save match.' }))
+      return
+    }
+    await runSync()
+    setSavingMatch(null)
+  }
+
+  return (
+    <>
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>Sync Yoco sales</div>
+        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+          Reads completed Yoco POS sales for {LOCATIONS.find((l) => l.id === location)?.name || location} in the
+          date range below, keeping the lines classified as food &amp; beverage income by the same category
+          rules used in the Finance Dashboard's Budget vs Actual. A sold dish is matched to a recipe and
+          issues each of its ingredients (scaled by the recipe's portions, so one slice of an 8-portion
+          lasagne only takes an eighth); anything sold as-is is matched to an item directly. Everything is
+          logged as a Service issue. Running this again for the same range never double-counts. Drinks
+          won't match here — the Beverage app handles those, so it's normal to see them below.
+        </div>
+        <div style={styles.formGrid}>
+          <div>
+            <label style={styles.label}>From</label>
+            <input
+              type="date"
+              style={styles.input}
+              value={start}
+              onChange={(e) => setDates((d) => ({ ...d, start: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>To</label>
+            <input
+              type="date"
+              style={styles.input}
+              value={end}
+              onChange={(e) => setDates((d) => ({ ...d, end: e.target.value }))}
+            />
+          </div>
+        </div>
+        <button style={styles.button} onClick={runSync} disabled={syncing}>
+          {syncing ? 'Syncing…' : 'Sync now'}
+        </button>
+        {syncError && <div style={{ color: colors.danger, fontSize: 12, marginTop: 10 }}>{syncError}</div>}
+        {result && (
+          <div style={{ fontSize: 13, marginTop: 12 }}>
+            Found {result.totalFnbLines} F&amp;B line item{result.totalFnbLines === 1 ? '' : 's'} in range.
+            Matched {result.matchedLines} ({result.recipesUsed} recipe{result.recipesUsed === 1 ? '' : 's'} used),
+            producing {result.issueRows} stock issue{result.issueRows === 1 ? '' : 's'} ({result.created} new,{' '}
+            {result.updated} already synced).{' '}
+            {result.unmatched.length > 0 ? (
+              <span style={{ color: colors.goldLt }}>{result.unmatched.length} unmatched — see below.</span>
+            ) : (
+              <span style={{ color: colors.ok }}>Everything matched.</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {result && result.unmatched.length > 0 && (
+        <div style={styles.card}>
+          <div style={styles.cardTitle}>Unmatched Yoco sales ({result.unmatched.length})</div>
+          <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
+            These lines were classified as food &amp; beverage income but produced no stock issue. Pick what
+            they should draw down — a recipe (for anything cooked) or an item (for things sold as bought) —
+            and click Match. It creates the issues for every sale of this name in the range above right now,
+            and the name is recognized automatically on every future sync. Rows flagged "recipe has no
+            ingredients" already matched a recipe, but that recipe is empty — add its ingredients on the
+            Menu tab instead of matching here. Leave drinks unmatched; they belong to the Beverage app.
+          </div>
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Yoco item name</th>
+                  <th style={styles.th}>Orders</th>
+                  <th style={styles.th}>Qty</th>
+                  <th style={styles.th}>Value (excl. VAT)</th>
+                  <th style={styles.th}>Last seen</th>
+                  <th style={styles.th}>Draw down from</th>
+                  <th style={styles.th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.unmatched.map((u) => {
+                  const selected = selections[u.name] ?? defaultSelectionFor(u)
+                  const isSaving = savingMatch === u.name
+                  const emptyRecipe = u.reason === 'recipe_has_no_ingredients'
+                  return (
+                    <tr key={u.name}>
+                      <td style={styles.td}>
+                        {u.name}
+                        {emptyRecipe && (
+                          <div style={{ fontSize: 11, color: colors.goldLt, marginTop: 2 }}>
+                            Matched recipe "{u.recipeName}" — but it has no ingredients yet.
+                          </div>
+                        )}
+                      </td>
+                      <td style={styles.tdNum}>{u.orders}</td>
+                      <td style={styles.tdNum}>{fmt(u.quantity, 0)}</td>
+                      <td style={styles.tdNum}>R {fmt(u.value)}</td>
+                      <td style={styles.td}>{u.lastSeen || '—'}</td>
+                      <td style={styles.td}>
+                        <SearchableSelect
+                          value={selected}
+                          onChange={(v) => setSelections((m) => ({ ...m, [u.name]: v }))}
+                          options={targetOptions}
+                          placeholder="Select recipe or item…"
+                          disabled={isSaving}
+                          inputStyle={styles.smallInput}
+                        />
+                        {!selections[u.name] && (u.suggestedRecipeName || u.suggestedItemName) && (
+                          <div style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>
+                            Suggested: {u.suggestedRecipeName ? `recipe ${u.suggestedRecipeName}` : `item ${u.suggestedItemName}`}
+                          </div>
+                        )}
+                        {matchErrors[u.name] && (
+                          <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>{matchErrors[u.name]}</div>
+                        )}
+                      </td>
+                      <td style={styles.td}>
+                        <button style={styles.button} disabled={!selected || isSaving} onClick={() => saveMatch(u)}>
+                          {isSaving ? 'Matching…' : 'Match'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
