@@ -16,6 +16,7 @@
 // needs hardening further.
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { supabase } from './supabaseClient.js'
+import { setLocations } from './sb.js'
 
 const CompanyContext = createContext(null)
 const STORAGE_KEY = 'food_company_id'
@@ -23,6 +24,11 @@ const APP_KEY = 'food_stock'
 
 export function CompanyProvider({ children }) {
   const [loading, setLoading] = useState(true)
+  // Lodges come from the shared `locations` table now instead of a
+  // hardcoded list (2026-08-26). They're loaded into sb.js's LOCATIONS array
+  // below; this flag keeps `loading` true until that's done, so nothing ever
+  // renders against an empty lodge list.
+  const [locationsReady, setLocationsReady] = useState(false)
   const [error, setError] = useState('')
   const [availableCompanies, setAvailableCompanies] = useState([])
   const [companyId, setCompanyId] = useState(null)
@@ -103,6 +109,37 @@ export function CompanyProvider({ children }) {
     load()
   }, [load])
 
+  // Load this company's lodges into sb.js's LOCATIONS array whenever the
+  // selected company changes. Ordered by created_at rather than id so the
+  // established ZC, EC, SC display order is preserved (alphabetical would
+  // reshuffle it to EC, SC, ZC). Only 'lodge' rows are kept — setLocations
+  // filters out the Finance Dashboard's 'overhead' head-office row, which
+  // these apps have never shown.
+  useEffect(() => {
+    let cancelled = false
+    if (!companyId) {
+      setLocations([])
+      setLocationsReady(true)
+      return
+    }
+    setLocationsReady(false)
+    supabase
+      .from('locations')
+      .select('id, name, type, created_at')
+      .eq('company_id', companyId)
+      .order('created_at')
+      .order('id')
+      .then(({ data, error: locErr }) => {
+        if (cancelled) return
+        if (locErr) setError(locErr.message || 'Could not load lodges.')
+        setLocations(data || [])
+        setLocationsReady(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [companyId])
+
   const switchCompany = useCallback((id) => {
     setCompanyId(id)
     localStorage.setItem(STORAGE_KEY, id)
@@ -110,7 +147,8 @@ export function CompanyProvider({ children }) {
 
   const current = availableCompanies.find((c) => c.id === companyId) || null
   const value = {
-    loading,
+    // Gate on lodges too — see locationsReady above.
+    loading: loading || !locationsReady,
     error,
     availableCompanies,
     companyId,
