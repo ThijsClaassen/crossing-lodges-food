@@ -33,21 +33,32 @@ Respond with ONLY valid JSON (no markdown code fences, no commentary before or a
   "slip_total": number or null — the grand total printed on the slip, if visible (whatever VAT treatment it's printed in — don't adjust it),
   "amounts_include_vat_guess": true, false, or null — true if the line/total amounts on the slip appear to be VAT-inclusive (e.g. a "Total incl VAT" line, a retail-style till slip with no separate ex-VAT column), false if they clearly appear to be VAT-exclusive (e.g. a tax invoice showing "Subtotal (excl VAT)" separately from a VAT line and an incl-VAT grand total), or null if you genuinely can't tell,
   "vat_rate_guess": number or null — the VAT percentage if explicitly printed on the slip (e.g. 15 for "VAT 15%"), otherwise null,
+  "zero_rated_marker": "string or null — the exact symbol or code this slip uses to mark zero-rated / VAT-exempt items, if you can determine it (see the VAT MARKERS section below)",
+  "zero_rated_marker_source": "legend, convention, or null — 'legend' if you read the meaning off a printed key/legend on this slip, 'convention' if you inferred it from the retailer's usual practice without a printed legend, null if you found no marker at all",
   "line_items": [
     {
-      "raw_text": "string — the item description exactly as printed, cleaned of stray OCR noise",
+      "raw_text": "string — the item description exactly as printed, cleaned of stray OCR noise. Keep any VAT marker symbol in place here rather than stripping it, so a person can check your reading",
       "qty": number — quantity/units purchased, default to 1 if not shown separately,
       "unit_price": number or null — price per unit if shown, in whatever VAT treatment is printed,
       "total_price": number — the line total, in whatever VAT treatment is printed (don't convert it — that's handled separately). If only unit_price is shown, compute qty * unit_price. If only total_price is shown, leave unit_price null.
+      "zero_rated": true, false, or null — see VAT MARKERS below. null means you could not tell for this line.
     }
   ]
 }
+
+VAT MARKERS (South African retail slips):
+- Many retailers print a symbol next to each item showing its VAT status, and a legend somewhere on the slip explaining it — e.g. "# = zero rated", "* = VAT exempt", or letter codes with a key such as "A = standard rated, B = zero rated".
+- ALWAYS look for that printed legend first and use what it actually says. Do NOT assume a particular symbol means zero-rated across all retailers — the same symbol means different things at different stores, and some slips use a symbol to mark the VAT-BEARING items rather than the exempt ones. Reading the slip's own key is the only reliable way.
+- If a legend is printed, set zero_rated_marker_source to "legend" and mark each line accordingly.
+- If no legend is printed but the retailer is identifiable and you are confident of its convention, you may apply it — but set zero_rated_marker_source to "convention" so the app can show a person that this was inferred rather than read.
+- If there is no marker system on the slip at all, set zero_rated_marker and zero_rated_marker_source to null and set zero_rated to null on every line. Do NOT guess an item's VAT status from what the product is — the app has its own record of that and will use it. Your job is only to report what the slip physically shows.
+- A line with no marker on a slip that clearly does use markers means that line is NOT zero-rated: report false, not null.
 
 Rules:
 - Only include real purchasable line items — skip subtotals, tax lines, discounts, and the grand total line itself (that goes in slip_total instead).
 - If a quantity or price is genuinely illegible, make your best reasonable estimate rather than omitting the line, but keep raw_text faithful to what's printed.
 - Numbers must be plain JSON numbers, not strings, and not include currency symbols.
-- Report prices exactly as printed on the slip — do not attempt to add or remove VAT yourself, that's handled by the app afterward based on amounts_include_vat_guess and vat_rate_guess.
+- Report prices exactly as printed on the slip — do not attempt to add or remove VAT yourself, that's handled by the app afterward based on amounts_include_vat_guess, vat_rate_guess and each line's zero_rated flag.
 - If the image isn't a purchase slip at all, or nothing is legible, return an empty line_items array.`
 
 export default async function handler(req, res) {

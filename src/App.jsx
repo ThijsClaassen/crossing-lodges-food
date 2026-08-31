@@ -118,23 +118,54 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100
 }
 
+// VAT treatments. Same vocabulary as the Finance Dashboard's
+// bank_transactions.vat_treatment, deliberately — one name per idea across
+// the system.
+const VAT_STANDARD = 'standard_15'
+const VAT_ZERO = 'zero_rated'
+
+// A row with no treatment of its own behaves the way the whole app did
+// before per-line VAT existed: standard-rated. That keeps every historical
+// row and every un-reviewed item costing exactly as it does today, so this
+// change can only correct things it has been explicitly told about.
+function effectiveTreatment(row) {
+  return row?.vat_treatment === VAT_ZERO ? VAT_ZERO : VAT_STANDARD
+}
+
 // Slips get read exactly as printed (see the prompt in api/parse-slip.js) —
 // VAT is only added/removed here, client-side, so it's transparent and
 // re-adjustable if the toggle or rate turns out wrong. Each row keeps its
 // original raw_total (as printed) untouched; total_cost is always
 // re-derived from that whenever the VAT settings change.
+//
+// The divisor is now PER ROW, not per slip. A retail till slip is
+// VAT-inclusive overall, but its zero-rated basic foodstuffs (brown bread,
+// maize meal, rice, milk, eggs, fresh produce) carry no VAT at all — their
+// printed price already IS the cost. Dividing those by 1.15 along with
+// everything else understated them by about 13%, which is exactly the bug
+// this replaces.
 function applyVatToRows(rows, pricesIncludeVat, vatRate) {
-  const divisor = pricesIncludeVat ? 1 + (Number(vatRate) || 0) / 100 : 1
-  return rows.map((r) => ({ ...r, total_cost: round2(r.raw_total / divisor) }))
+  return rows.map((r) => {
+    const divisor =
+      pricesIncludeVat && effectiveTreatment(r) === VAT_STANDARD
+        ? 1 + (Number(vatRate) || 0) / 100
+        : 1
+    return { ...r, total_cost: round2(r.raw_total / divisor) }
+  })
 }
 
 // Member purchases are never VAT-stripped — the VAT-INCLUSIVE amount as
 // printed on the slip is what gets forwarded to the member's account,
 // unlike total_cost above which this app strips VAT from for its own
 // costing. If the slip's prices already exclude VAT, gross raw_total back
-// up so the member is always billed the inclusive figure either way.
+// up so the member is always billed the inclusive figure either way — but
+// never on a zero-rated line, which has no VAT to add and whose printed
+// price is already the full amount.
 function vatInclusiveAmount(row, pricesIncludeVat, vatRate) {
-  const multiplier = pricesIncludeVat ? 1 : 1 + (Number(vatRate) || 0) / 100
+  const multiplier =
+    pricesIncludeVat || effectiveTreatment(row) === VAT_ZERO
+      ? 1
+      : 1 + (Number(vatRate) || 0) / 100
   return round2(row.raw_total * multiplier)
 }
 
@@ -1206,6 +1237,7 @@ function AuthenticatedApp() {
                 onRemoveCredit={removeLocalCreditNote}
                 onIssueAdd={addLocalIssue}
                 onIssueRemove={removeLocalIssue}
+                onItemsChanged={loadAll}
               />
             )}
             {activeTab === 'issues' && (
@@ -1681,6 +1713,7 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
     max_units: 0,
     order_pack_size: 1,
     order_pack_label: '',
+    vat_treatment: '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -1691,6 +1724,9 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
       ...form,
       company_id: companyId,
       supplier_id: form.supplier_id || null,
+      // '' is the form's "not decided yet"; the column needs a real null,
+      // and its CHECK constraint would reject an empty string outright.
+      vat_treatment: form.vat_treatment || null,
       location_id: location,
       order_pack_size: Number(form.order_pack_size) || 1,
       order_pack_label: form.order_pack_label || null,
@@ -1706,6 +1742,7 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
       max_units: 0,
       order_pack_size: 1,
       order_pack_label: '',
+      vat_treatment: '',
     })
     setSaving(false)
     onAdd(row)
@@ -1815,6 +1852,21 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
               onChange={(e) => setForm({ ...form, order_pack_label: e.target.value })}
             />
           </div>
+          <div>
+            <label style={styles.label}>VAT</label>
+            <select
+              style={styles.input}
+              value={form.vat_treatment}
+              onChange={(e) => setForm({ ...form, vat_treatment: e.target.value })}
+            >
+              {/* Empty is the honest default for a brand new item: nobody
+                  has decided yet, so the next slip's marker gets to. Once a
+                  value is set here it wins over any slip. */}
+              <option value="">Work it out from the slip</option>
+              <option value={VAT_STANDARD}>15% VAT</option>
+              <option value={VAT_ZERO}>Zero-rated (no VAT)</option>
+            </select>
+          </div>
         </div>
         <button style={styles.button} onClick={addItem} disabled={saving}>
           {saving ? 'Adding…' : 'Add item'}
@@ -1839,6 +1891,7 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
               <th style={styles.th}>Order pack size</th>
               <th style={styles.th}>Pack label</th>
               <th style={styles.th}>Barcode</th>
+              <th style={styles.th}>VAT</th>
               <th style={styles.th}>Min</th>
               <th style={styles.th}>Max</th>
               <th style={styles.th}>W/Avg cost</th>
@@ -1924,6 +1977,21 @@ function ItemsTab({ items, metricsByItem, location, companyId, suppliers, onAdd,
                       placeholder="unlinked"
                       onBlur={(e) => updateItem(it.id, { barcode: e.target.value.trim() || null })}
                     />
+                  </td>
+                  <td style={styles.td}>
+                    {/* Setting this here beats a slip marker from now on —
+                        a considered decision should not be re-litigated by
+                        every future scan. Back to "From slip" to hand the
+                        judgement back to the scanner. */}
+                    <select
+                      style={{ ...styles.smallInput, width: 120 }}
+                      value={it.vat_treatment || ''}
+                      onChange={(e) => updateItem(it.id, { vat_treatment: e.target.value || null })}
+                    >
+                      <option value="">From slip</option>
+                      <option value={VAT_STANDARD}>15% VAT</option>
+                      <option value={VAT_ZERO}>Zero-rated</option>
+                    </select>
                   </td>
                   <td style={styles.td}>
                     <input
@@ -2183,7 +2251,7 @@ function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSav
 // conventions from the photo alone.
 // ---------------------------------------------------------------------------
 
-function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, memberBillingEnabled, onMemberPending }) {
+function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, memberBillingEnabled, onMemberPending, onItemsChanged }) {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState('')
   const [review, setReview] = useState(null) // { date, supplier, rows: [...] }
@@ -2213,18 +2281,48 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
         typeof data.amounts_include_vat_guess === 'boolean' ? data.amounts_include_vat_guess : true
       const vatRate = data.vat_rate_guess ?? 15
 
+      // 'legend' = the scanner read the slip's own printed key explaining
+      // its symbols. 'convention' = it inferred the retailer's usual
+      // practice without a printed key, which is worth flagging to a person
+      // as the weaker of the two.
+      const markerSource = data.zero_rated_marker_source === 'legend' ? 'legend' : 'convention'
+      const markerSymbol = data.zero_rated_marker || null
+
       const rowsRaw = (data.line_items || []).map((li, idx) => {
         const itemMatch = findBestMatch(li.raw_text, items, 'name')
         const rawTotal = li.total_price ?? (li.unit_price && li.qty ? li.unit_price * li.qty : 0)
+        const matchedItem = itemMatch.confident ? itemMatch.match : null
+
+        // Precedence: what we already know about the item beats what the
+        // slip says. The item's status was set by a person approving a
+        // previous slip, so it outranks a fresh OCR reading — and it still
+        // applies on suppliers whose slips carry no markers at all.
+        // Only when the item has never been established (null) do we fall
+        // back to this slip's marker, and null from the scanner (no marker
+        // system on the slip) means standard, i.e. unchanged behaviour.
+        const slipSaysZero = li.zero_rated === true
+        const known = matchedItem?.vat_treatment || null
+        const treatment = known || (slipSaysZero ? VAT_ZERO : VAT_STANDARD)
+
         return {
           key: idx,
           raw_text: li.raw_text,
-          item_id: itemMatch.confident ? itemMatch.match.id : '',
+          item_id: matchedItem ? matchedItem.id : '',
           confident: itemMatch.confident,
           guessName: itemMatch.match?.name || '',
           qty: li.qty ?? 1,
           raw_total: rawTotal,
           total_cost: rawTotal,
+          vat_treatment: treatment,
+          // Kept so the review screen can be honest about WHERE the status
+          // came from — a remembered decision, the slip's own legend, or a
+          // guess at the retailer's convention.
+          vat_source: known ? 'item' : li.zero_rated == null ? 'default' : markerSource,
+          // True when the slip contradicts what we already had on file.
+          // Worth surfacing rather than silently resolving: it usually
+          // means either the item was flagged wrongly before, or the
+          // scanner misread a marker.
+          vat_conflict: !!known && li.zero_rated != null && (known === VAT_ZERO) !== slipSaysZero,
           skip: false,
           billToMember: false,
         }
@@ -2236,6 +2334,8 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
         slipTotal: data.slip_total ?? null,
         pricesIncludeVat,
         vatRate,
+        markerSymbol,
+        markerSource: data.zero_rated_marker_source || null,
         rows: applyVatToRows(rowsRaw, pricesIncludeVat, vatRate),
         photoBlob: resized,
       })
@@ -2250,6 +2350,39 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
     setReview((r) => ({ ...r, rows: r.rows.map((row) => (row.key === key ? { ...row, ...patch } : row)) }))
   }
 
+  // Changing a row's VAT status has to re-derive that row's cost from the
+  // price as printed — otherwise the toggle would move the label without
+  // moving the number, which is the worst of both worlds.
+  function setRowTreatment(key, treatment) {
+    setReview((r) => ({
+      ...r,
+      rows: r.rows.map((row) =>
+        row.key === key
+          ? applyVatToRows([{ ...row, vat_treatment: treatment, vat_source: 'user', vat_conflict: false }], r.pricesIncludeVat, r.vatRate)[0]
+          : row
+      ),
+    }))
+  }
+
+  // Picking a different item mid-review should pull in whatever we already
+  // know about that item's VAT status, for the same reason the scan does:
+  // a previously confirmed decision beats this slip's reading.
+  function setRowItem(key, itemId) {
+    setReview((r) => ({
+      ...r,
+      rows: r.rows.map((row) => {
+        if (row.key !== key) return row
+        const known = items.find((i) => i.id === itemId)?.vat_treatment || null
+        if (!known || row.vat_source === 'user') return { ...row, item_id: itemId }
+        return applyVatToRows(
+          [{ ...row, item_id: itemId, vat_treatment: known, vat_source: 'item', vat_conflict: false }],
+          r.pricesIncludeVat,
+          r.vatRate
+        )[0]
+      }),
+    }))
+  }
+
   function setPricesIncludeVat(val) {
     setReview((r) => ({ ...r, pricesIncludeVat: val, rows: applyVatToRows(r.rows, val, r.vatRate) }))
   }
@@ -2262,6 +2395,38 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
     setReview(null)
     setScanError('')
     setSaveStatus('')
+  }
+
+  // Write each approved line's VAT status back onto its item, so the next
+  // slip — and every hand-typed purchase — gets it right without anyone
+  // re-reading a marker.
+  //
+  // Two deliberate limits:
+  //  * Gaps only. An item that already carries a treatment is skipped, so a
+  //    considered correction on the Items tab cannot be quietly reversed by
+  //    a later slip whose marker was misread.
+  //  * Never fatal. The purchases are already saved by this point; failing
+  //    to record a preference must not surface as "could not save" and
+  //    tempt anyone into re-scanning a slip that went in fine. Worst case
+  //    the item stays unset and the next slip asks again.
+  async function learnItemVatTreatments(rows) {
+    const learned = new Map()
+    for (const r of rows) {
+      if (!r.item_id || learned.has(r.item_id)) continue
+      if (items.find((i) => i.id === r.item_id)?.vat_treatment) continue
+      learned.set(r.item_id, effectiveTreatment(r))
+    }
+    if (learned.size === 0) return
+    try {
+      await Promise.all(
+        [...learned].map(([id, treatment]) =>
+          sb.update('food_items', { id }, { vat_treatment: treatment })
+        )
+      )
+      onItemsChanged?.()
+    } catch (err) {
+      console.warn('Could not save VAT treatment back to items:', err)
+    }
   }
 
   async function approve() {
@@ -2294,11 +2459,23 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
           date: review.date,
           units: Number(r.qty),
           total_cost_excl_vat: Number(r.total_cost) || 0,
+          vat_treatment: effectiveTreatment(r),
           supplier: review.supplier || '',
           slip_id: slip.id,
         }))
         saved = await sb.insert('food_purchases', payload)
         onApproved(saved || [])
+
+        // THE LEARNING STEP. Approving the review is a person confirming
+        // the VAT status, so write it back onto the item — that's what
+        // makes the next slip right without anyone re-reading a marker,
+        // and what makes hand-typed purchases right too.
+        //
+        // Only fills gaps: an item that already has a treatment is left
+        // alone, so a deliberate correction on the Items tab can't be
+        // silently undone by a later misread slip. Changing an established
+        // item's status is done on the Items tab, on purpose.
+        await learnItemVatTreatments(toSave)
       }
       if (toMember.length) {
         await addPendingCharges({
@@ -2406,7 +2583,12 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
             purchase costs <strong>excl. VAT</strong> — "Total cost" below is already the VAT-stripped figure
             that gets saved; change "Slip prices" or the VAT rate above if it doesn't look right, and every row
             recalculates. Editing a row's total cost by hand overrides that row only, until the VAT settings
-            change again.
+            change again.{' '}
+            <strong>VAT</strong> is now per line: zero-rated basics (brown bread, maize meal, rice, milk, eggs,
+            fresh produce) carry no VAT, so their printed price is already the full cost and nothing is stripped
+            from it. The scanner reads the slip's own marker key where there is one, and whatever you approve
+            here is remembered against the item — so next time it's right on its own, even from a supplier whose
+            slip has no markers at all.
             {memberBillingEnabled && (
               <>
                 {' '}A line bought on a member's behalf (not our stock) can be ticked{' '}
@@ -2430,6 +2612,7 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
                   <th style={styles.th}>Item</th>
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Unit</th>
+                  <th style={styles.th}>VAT</th>
                   <th style={styles.th}>Total cost (excl. VAT)</th>
                   <th style={styles.th}>Skip</th>
                   {memberBillingEnabled && <th style={styles.th}>Bill to Member</th>}
@@ -2449,7 +2632,7 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
                     <td style={styles.td}>
                       <SearchableSelect
                         value={row.item_id}
-                        onChange={(v) => updateRow(row.key, { item_id: v })}
+                        onChange={(v) => setRowItem(row.key, v)}
                         options={items.map((it) => ({ value: it.id, label: it.name }))}
                         placeholder={row.guessName ? `Select item… (AI guess: ${row.guessName})` : 'Select item…'}
                         inputStyle={{ ...styles.smallInput, width: 170 }}
@@ -2465,6 +2648,33 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
                       />
                     </td>
                     <td style={styles.td}>{itemUnit(row.item_id) || '—'}</td>
+                    <td style={styles.td}>
+                      <select
+                        style={{ ...styles.smallInput, width: 110 }}
+                        value={effectiveTreatment(row)}
+                        onChange={(e) => setRowTreatment(row.key, e.target.value)}
+                      >
+                        <option value={VAT_STANDARD}>15% VAT</option>
+                        <option value={VAT_ZERO}>Zero-rated</option>
+                      </select>
+                      {/* Where this came from matters: a remembered decision
+                          is trustworthy, a guess at a retailer's convention
+                          is worth a second look. Saying which is which beats
+                          showing a status with no provenance. */}
+                      {row.vat_conflict ? (
+                        <div style={{ fontSize: 10, color: colors.danger, marginTop: 2 }}>
+                          slip disagrees with the item — check
+                        </div>
+                      ) : row.vat_source === 'item' ? (
+                        <div style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>from item</div>
+                      ) : row.vat_source === 'legend' ? (
+                        <div style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>
+                          slip key{review.markerSymbol ? ` (${review.markerSymbol})` : ''}
+                        </div>
+                      ) : row.vat_source === 'convention' ? (
+                        <div style={{ fontSize: 10, color: colors.danger, marginTop: 2 }}>guessed — check</div>
+                      ) : null}
+                    </td>
                     <td style={styles.td}>
                       <input
                         type="number" inputMode="decimal"
@@ -2498,7 +2708,7 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
                 ))}
                 {review.rows.length === 0 && (
                   <tr>
-                    <td style={styles.td} colSpan={memberBillingEnabled ? 7 : 6}>
+                    <td style={styles.td} colSpan={memberBillingEnabled ? 8 : 7}>
                       Nothing readable was found on that photo — try again with better lighting, or log purchases
                       manually below.
                     </td>
@@ -2812,7 +3022,7 @@ function MemberPurchaseCard({ companyId, location, refreshSignal }) {
   )
 }
 
-function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onUpdate, onRemove, slips, onSlipAttached, creditNotes, metricsByItem, onAddCredit, onRemoveCredit, onIssueAdd, onIssueRemove }) {
+function PurchasesTab({ items, purchases, suppliers, location, companyId, period, onAdd, onUpdate, onRemove, slips, onSlipAttached, creditNotes, metricsByItem, onAddCredit, onRemoveCredit, onIssueAdd, onIssueRemove, onItemsChanged }) {
   const { memberBillingEnabled } = useCompany()
   const [memberPendingRefresh, setMemberPendingRefresh] = useState(0)
   // Credit Notes (2026-08-25) — lives inside Purchases as a toggle rather
@@ -2868,6 +3078,11 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         date: form.date,
         units: Number(form.units),
         total_cost_excl_vat: Number(form.total_cost_excl_vat || 0),
+        // Recorded, not calculated: this form asks for the ex-VAT figure
+        // directly, so there is nothing to strip. Stamping the item's
+        // treatment on the row keeps hand-typed purchases consistent with
+        // scanned ones for anyone auditing later.
+        vat_treatment: selectedItem?.vat_treatment || null,
         supplier: form.supplier,
         slip_id: slipId,
       })
@@ -2896,6 +3111,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         onSlipAttached={onSlipAttached}
         memberBillingEnabled={memberBillingEnabled}
         onMemberPending={() => setMemberPendingRefresh((n) => n + 1)}
+        onItemsChanged={onItemsChanged}
       />
 
       {memberBillingEnabled && (
@@ -2981,6 +3197,15 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
               value={form.total_cost_excl_vat}
               onChange={(e) => setForm({ ...form, total_cost_excl_vat: e.target.value })}
             />
+            {/* The commonest way to get this wrong by hand is to divide a
+                zero-rated price by 1.15 out of habit, which is the same
+                13% understatement the scanner used to cause. Say so at the
+                point of entry rather than hoping it's remembered. */}
+            {selectedItem?.vat_treatment === VAT_ZERO && (
+              <div style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>
+                Zero-rated — enter the price exactly as printed, don't take 15% off.
+              </div>
+            )}
           </div>
           <div>
             <label style={styles.label}>Supplier</label>
