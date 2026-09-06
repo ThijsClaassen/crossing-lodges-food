@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import './styles.css'
+import './app.css'
 
 // Without this, any uncaught error anywhere in the app (a bad camera
 // callback, a network hiccup mid-render, anything) unmounts the whole

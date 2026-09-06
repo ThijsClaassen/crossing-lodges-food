@@ -1,0 +1,1002 @@
+/* GENERATED — do not edit. Source: tools/shared-styles/core.css (b86a61744334)
+   Edit the source and re-run tools/distribute_styles.mjs. Local rules for
+   this app belong in app.css, which loads after this file. */
+/* ==========================================================================
+   CORE — the shared stylesheet. One file, byte-identical in all seven apps.
+
+   THE CONTRACT
+   Everything here is common to every app. Anything that belongs to one app
+   (Ops's fleet cards, Maintenance's calendar, Finance's report tables) lives
+   in that app's own app.css, which loads after this file.
+
+   Edit this file HERE, in tools/shared-styles/, and re-run
+   tools/distribute_styles.mjs. The copies in each app are generated; editing
+   one of them makes the apps drift apart one value at a time, invisibly,
+   which is exactly the state this file was written to end.
+
+   WHY A REAL .CSS FILE
+   Six of the seven apps used to build their stylesheet as a JavaScript
+   template literal and render it with <style>{css}</style>. On 2026-09-06 a
+   CSS comment containing a backtick ended that string early and five
+   production apps died at load with "ReferenceError: row is not defined".
+   A stylesheet is not a string. Vite imports .css natively; that whole class
+   of failure goes away with the template literal.
+
+   WHAT THIS FILE FIXED ON ARRIVAL
+   The six non-Finance apps had accumulated their shell in two layers: an
+   original block written for the old dark chrome, and an "Elevation + dark
+   rail" block appended later that overrides much of it. Reading only the
+   first layer gives a wrong picture — .sidebar appears to be white, when the
+   later rule sets it to var(--sidebar-bg). Everything below was checked by
+   computing the EFFECTIVE value (last declaration wins), not the first match.
+
+   Genuinely wrong, and fixed here:
+     - .loc-btn.active-ZC/EC/SC and their mobile twins still hardcoded the
+       old Crossing Lodges gold as rgba(184,147,90,…), so a client accent
+       could never reach the lodge switcher;
+     - .page-title was still Cormorant Garamond, after the rest of the
+       product moved to one typeface;
+     - .sidebar-footer-btn had border:none at 10px, so the light/dark toggle
+       and sign-out read as status labels rather than controls.
+
+   Already correct before this file, and preserved rather than "fixed":
+     - the navy rail, the knocked-out logo, and .nav-item.active's accent
+       wash. The two-layer structure hid these; collapsing the layers into
+       one set of rules is most of what this file does.
+
+   The real win is not any single value. It is that the shell now exists
+   once, in one layer, in one file — rather than as an original plus an
+   override in six copies.
+   ========================================================================== */
+
+/* ==========================================================================
+   THEME TOKENS — three tiers, and only one of them belongs to the client.
+
+   1. NEUTRAL BASE   ours, fixed. Every surface, border and text colour.
+   2. SEMANTIC       ours, fixed, NEVER themeable. If a client can recolour
+                     "danger", red stops meaning red.
+   3. ACCENT         theirs. One value, set at runtime from
+                     companies.theme_accent; hover/active/contrast derived
+                     from it in theme.js.
+
+   Why the base is neutral slate rather than the old navy: #1e1d2b is
+   distinctly blue-violet, which is a BRAND choice. It fights a client whose
+   accent is red, orange or teal. A near-neutral base carries any accent.
+
+   Contrast: every text token below clears WCAG AA 4.5:1 against its own
+   surface, in both modes. The previous palette did not — --danger was
+   3.31:1 on --panel, i.e. the alert colour was the least readable thing on
+   screen. Verified by tools/contrast_check.mjs; run it after any change.
+
+   The old variable names (--gold, --cream, --navy ...) are kept as ALIASES
+   at the bottom of each block. 194 usages across styles.css and the JSX
+   read them, and aliasing means none of that had to change — and nothing
+   could be missed.
+   ========================================================================== */
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --surface-sunken: #eef1f5;
+  --surface: #f7f9fb;
+  --surface-raised: #ffffff;
+  --surface-overlay: #f0f3f7;
+  /* #d6dee7 was the obvious choice and measured 1.29:1 against --surface —
+     a hairline that effectively vanishes, which matters most on the dense
+     Budget vs Actual and Trial Balance tables, and worse on a phone in
+     sunlight. #c3cfdc gives 1.50:1 and still reads as a light rule. */
+  --line: #c3cfdc;
+  --text: #161b22;
+  --text-muted: #5a6572;
+
+  /* Darker semantic variants — the dark-mode ones are far too light to pass
+     contrast on a white panel. */
+  --success: #0f7a45;
+  --warning: #9a5b00;
+  --critical: #b42318;
+  --informative: #175cd3;
+
+  --accent: #4338ca;
+  --accent-hover: #3730a3;
+  --accent-active: #312e81;
+  --accent-contrast: #ffffff;
+  --accent-wash: rgba(67, 56, 202, 0.09);
+  /* The panel accent (#4338CA) would be almost invisible on the navy rail,
+     so the rail gets a lightened variant of the same client colour. */
+  --accent-on-dark: #a5b4fc;
+  --accent-on-dark-wash: rgba(165, 180, 252, 0.16);
+
+  /* Softer and blue-tinted rather than neutral grey: a grey shadow on a
+     light surface reads as dirt, a slightly cool one reads as depth. */
+  --shadow-sm: 0 1px 2px rgba(22, 32, 46, 0.06), 0 1px 3px rgba(22, 32, 46, 0.08);
+  --shadow-md: 0 2px 4px rgba(22, 32, 46, 0.04), 0 6px 16px rgba(22, 32, 46, 0.09);
+  --shadow-lg: 0 8px 28px rgba(22, 32, 46, 0.13);
+
+  --card-border: transparent;
+  /* Lightened from #16202e (2026-09-06, Thijs). Every text token on the
+     rail was re-measured against it rather than assumed — --sidebar-muted
+     had to lift with it, see below. */
+  --sidebar-bg: #233348;
+
+  --series-1: #4338ca;
+  --series-2: #0e7490;
+  --series-3: #9a5b00;
+  --series-4: #7e22ce;
+  --series-5: #1d4ed8;
+  --series-6: #b04a2f;
+
+  /* Mode-independent: shape, type, and the legacy aliases that 194
+     existing var() usages still read. These belong to the BASE block —
+     left in the dark override they would simply not exist in light
+     mode, and every aliased colour would fall back to nothing. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --sidebar-text: #e8edf4;
+  /* Lifted with the rail. At #8b97a6 this fell to 4.32:1 on the new
+     #233348 — under AA, and it is the colour the sidebar section labels
+     and the footer use. */
+  --sidebar-muted: #98a4b3;
+  --sidebar-line: rgba(255, 255, 255, 0.1);
+  /* ONE TYPEFACE. Three families was one and a half too many.
+     Space Mono on money was the worse of the two: "R 348 997,39" set with
+     wide letter-spacing and slab serifs reads as code, not currency. The
+     only real argument for mono on numbers is column alignment, and Inter
+     does that with font-variant-numeric: tabular-nums in a face that
+     matches everything around it.
+     Cormorant Garamond was a brand choice, not a product one. At 15–17px
+     its thin strokes and small counters made headings read SOFTER than the
+     body text beneath them — the opposite of a heading's job — and being
+     the most identity-carrying thing on the page makes it exactly wrong for
+     a white-label product, where the client's brand should arrive through
+     the accent and the logo. It survives as --font-brand, used only where a
+     human actually reads brand: the login screen and printed report heads. */
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-numeric: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-brand: 'Cormorant Garamond', Georgia, serif;
+  /* Kept so the existing var(--font-mono) call sites keep resolving. It is
+     deliberately NOT monospace any more — the name is legacy, like --gold
+     and --navy below. New code should say --font-numeric. */
+  --font-mono: var(--font-numeric);
+  --bg: var(--surface);
+  --panel: var(--surface-raised);
+  --panel-alt: var(--surface-overlay);
+  --border: var(--line);
+  --cream: var(--text);
+  --muted: var(--text-muted);
+  --navy: var(--surface-overlay);
+  --navy-lt: var(--line);
+  --gold: var(--accent);
+  --gold-lt: var(--accent-hover);
+  --ok: var(--success);
+  --danger: var(--critical);
+  --fuel-d: var(--informative);
+  --fuel-p: var(--critical);
+  --loc-zc: var(--series-1);
+  --loc-ec: var(--series-2);
+  --loc-sc: var(--series-3);
+}
+
+/* DARK IS THE OVERRIDE, LIGHT IS THE DEFAULT — deliberately.
+   These blocks used to be the other way round, which meant the shipped
+   default appearance depended on JavaScript running applyTheme() to set
+   data-theme. When the branding wiring was reverted from an app, that
+   attribute stopped being set and the app silently fell back to dark. A
+   product's default look must not depend on a script succeeding. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 1 — neutral base */
+  --surface-sunken: #0f1216;
+  --surface: #12161b;
+  --surface-raised: #1a1f26;
+  --surface-overlay: #222831;
+  --line: #333c48;
+  --text: #eef1f5;
+  --text-muted: #9aa5b1;
+
+  /* 2 — semantic, fixed */
+  --success: #3dbe7a;
+  --warning: #e8a33d;
+  --critical: #f0736a;
+  --informative: #63a8f0;
+
+  /* 3 — accent. Overwritten at runtime by applyTheme(); this is only the
+     fallback for a company with no accent set, and for the login screen
+     which renders before any company is known. */
+  --accent: #7c8cf8;
+  --accent-hover: #93a0fa;
+  --accent-active: #6675f0;
+  --accent-contrast: #12161b;
+  --accent-wash: rgba(124, 140, 248, 0.12);
+  --accent-on-dark: #7c8cf8;
+  --accent-on-dark-wash: rgba(124, 140, 248, 0.16);
+
+  /* Elevation and shape. Previously both were hardcoded — one shadow value
+     and 28 separate border-radius declarations — which meant "make the
+     cards pop" was a find-and-replace rather than a setting. On a dark page
+     lift comes from a darker shadow; on a light page it comes from a soft,
+     slightly blue-tinted one. A neutral grey shadow on light looks dirty. */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* The sidebar rail is dark in BOTH modes — see SIDEBAR_SURFACE in
+     theme.js. In dark mode it sits below the page; in light mode it becomes
+     the navy chrome that makes the white cards read as floating. */
+  /* Cards keep a hairline on dark (a shadow alone barely reads there) and
+     drop it on light, where the shadow does the work and a border would
+     make the card look pasted on. It's a token rather than a CSS override
+     because four of the seven apps style their cards with INLINE style
+     objects, which can't express "only in light mode". */
+  --card-border: var(--line);
+
+  /* Dark mode keeps its own, darker rail: the page here is #12161b, so a
+     rail LIGHTER than the page would invert the intended depth — the rail
+     recedes behind the content rather than floating above it. That caps how
+     far this one can be lifted; #161d28 (the first attempt) overshot the
+     page and the contrast test caught it. #101420 is the lightest value
+     still below the page, and gains most of its change from being bluer
+     (blue channel 0x16 → 0x20) rather than lighter, which is the part of
+     "lighter blue" that dark mode can actually deliver. */
+  --sidebar-bg: #101420;
+
+  /* Categorical series for charts — distinguishable in order, and not
+     reusing the semantic hues, so a chart series can never be mistaken for
+     a status. */
+  --series-1: #7c8cf8;
+  --series-2: #4fc4cf;
+  --series-3: #e8a33d;
+  --series-4: #b98ee6;
+  --series-5: #6ba5e7;
+  --series-6: #d98a76;
+
+  /* --- aliases: old names, new values -------------------------------- */
+
+}
+
+/* ==========================================================================
+   1. BASE ELEMENTS
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  /* Inter sets a little loose at heading sizes; pulling it in slightly is
+     what makes a sans-serif heading look deliberate rather than just big. */
+  letter-spacing: -0.01em;
+}
+
+/* Numbers line up because the face is asked to, not because it is monospace.
+   Space Mono used to do this job and made every amount read as code. */
+.numeric,
+.mono {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   2. CONTROLS — the floor, not the design.
+
+   These are ELEMENT selectors (0,0,1) and they sit ABOVE every component
+   rule in this file, so they lose on both specificity and order to anything
+   more specific. Nothing that already looks right changes; only controls
+   nobody had styled yet.
+
+   Order matters as much as specificity: button[type='submit'] is (0,1,1),
+   the same as .bulk-bar button, so if this block moved below the components
+   it would start beating them. It stays here.
+   ========================================================================== */
+
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+/* The primary action on a form should look like it. */
+button[type='submit'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+button[type='submit']:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+button:disabled {
+  background: var(--surface-overlay);
+  border-color: var(--line);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+select,
+input,
+textarea {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+}
+
+select {
+  cursor: pointer;
+}
+
+/* A visible focus ring is the one piece of styling a control must not lose.
+   Removing the browser default without replacing it is how a form quietly
+   stops being keyboard-navigable — a regression nobody notices with a mouse. */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   3. APP SHELL — sidebar rail, nav, topbar. Identical in all seven apps.
+   ========================================================================== */
+
+.shell,
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The rail is DARK IN BOTH MODES. In dark mode it recedes behind the page;
+   in light mode it becomes the navy chrome that makes the white cards read
+   as floating. Its text tokens are fixed rather than inherited — inheriting
+   --text would put near-black on navy the moment someone switched to light,
+   which parses fine and is unreadable. */
+.sidebar {
+  width: 230px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-right: 1px solid var(--sidebar-line);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sidebar-logo {
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid var(--sidebar-line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Knocks the logo out to white. Correct because the rail is dark in both
+   modes — it was previously doing this on a WHITE sidebar, i.e. rendering
+   the logo invisible. */
+.sidebar-logo img {
+  width: 140px;
+  height: auto;
+  filter: brightness(0) invert(1) opacity(0.92);
+}
+
+.sidebar-sub {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent-on-dark);
+  font-weight: 600;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.sidebar-company {
+  font-size: 11px;
+  color: var(--sidebar-muted);
+  text-align: center;
+}
+
+.sidebar-select-wrap {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--sidebar-line);
+}
+
+/* On the rail, not on a page surface — so these use the rail's own tokens
+   rather than --surface-raised, which would be a white box on navy. */
+.sidebar-select {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--sidebar-line);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  color: var(--sidebar-text);
+  font-family: var(--font-body);
+  font-size: 12px;
+}
+
+.sidebar-select option {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+}
+
+.loc-switcher {
+  padding: 12px 13px;
+  border-bottom: 1px solid var(--sidebar-line);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.loc-label {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sidebar-muted);
+  font-weight: 600;
+  margin-bottom: 5px;
+  padding-left: 2px;
+}
+
+.loc-btn {
+  padding: 7px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+  background: transparent;
+  color: var(--sidebar-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.loc-btn:hover {
+  color: var(--sidebar-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Per-lodge accents stay SERIES colours, not the client accent — they
+   identify a place, not an interaction, and a client recolouring their brand
+   should not silently recolour which lodge is which. */
+.loc-btn.active-ZC,
+.mobile-loc-btn.active-ZC {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--series-1);
+  color: var(--sidebar-text);
+}
+
+.loc-btn.active-EC,
+.mobile-loc-btn.active-EC {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--series-2);
+  color: var(--sidebar-text);
+}
+
+.loc-btn.active-SC,
+.mobile-loc-btn.active-SC {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--series-3);
+  color: var(--sidebar-text);
+}
+
+.loc-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.period-wrap {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--sidebar-line);
+}
+
+.nav {
+  flex: 1;
+  padding: 8px 0;
+  overflow-y: auto;
+}
+
+.nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sidebar-muted);
+  transition: all 0.15s;
+  border: none;
+  border-right: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  letter-spacing: 0.01em;
+}
+
+.nav-item:hover {
+  color: var(--sidebar-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* The one place the client accent belongs in the shell: the active item.
+   This used to be a hardcoded rgba(184,147,90,…) — the old Crossing Lodges
+   gold — so a client could set any accent they liked and the selected menu
+   item stayed gold, which is exactly what makes a white-label look
+   half-finished. */
+.nav-item.active {
+  color: var(--accent-on-dark);
+  background: var(--accent-on-dark-wash);
+  border-right-color: var(--accent-on-dark);
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  padding: 13px 18px;
+  border-top: 1px solid var(--sidebar-line);
+  font-size: 10px;
+  color: var(--sidebar-muted);
+  line-height: 1.6;
+}
+
+.sidebar-footer-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+/* These read as status labels rather than controls at 10px with no border.
+   The light/dark toggle in particular is a feature people never find because
+   it does not look clickable. */
+.sidebar-footer-btn {
+  background: none;
+  border: 1px solid var(--sidebar-line);
+  color: var(--sidebar-text);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.05em;
+  font-family: var(--font-body);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.sidebar-footer-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--sidebar-muted);
+}
+
+/* Topbar — visible on desktop and mobile. Carries the page title plus the
+   account controls that also live in the sidebar, so they stay reachable
+   once the sidebar hides on a phone. */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 20px;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  gap: 12px;
+}
+
+.page-title {
+  font-family: var(--font-heading);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* On a page surface, unlike .sidebar-select. */
+.topbar-select {
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* Native option lists inherit almost nothing, so they need saying explicitly
+   or the dropdown opens as system-default white on every platform. */
+.topbar-select option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.topbar-signout {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 5px 10px;
+  flex-shrink: 0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--surface-overlay);
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   4. LOGIN — the one screen where brand does visible work.
+   ========================================================================== */
+
+/* Given a real backdrop rather than inheriting the page. When light mode
+   became the default, .login-screen had no background of its own, so a white
+   card sat on a near-white page and the form stopped reading as an object.
+   The rail navy is the natural choice: it is already the product's one dark
+   surface in both modes, so the login screen looks deliberately branded
+   rather than incidentally blank. */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--sidebar-bg);
+  padding: 1.5rem;
+}
+
+.login-form {
+  background: var(--surface-raised);
+  border: 1px solid var(--card-border);
+  padding: 2rem;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 320px;
+}
+
+/* One of the two places the serif survives — a login screen is where a
+   person actually looks at whose product this is. */
+.login-form h1 {
+  font-family: var(--font-brand);
+  font-size: 1.7rem;
+  letter-spacing: 0;
+  margin: 0 0 0.5rem;
+  color: var(--text);
+}
+
+.login-form input {
+  width: 100%;
+}
+
+/* Inherits the primary button style above rather than restating it — this
+   used to be var(--navy), which now aliases to a pale grey, leaving the
+   primary action on the page nearly invisible. */
+.login-form button {
+  width: 100%;
+  padding: 0.6rem;
+  font-weight: 600;
+}
+
+.login-error,
+.error {
+  color: var(--critical);
+  font-size: 0.85rem;
+}
+
+/* ==========================================================================
+   5. SHARED COMPONENTS
+   ========================================================================== */
+
+/* ONE LEVEL OF CARD. Every level of nesting costs contrast and adds noise
+   while conveying nothing — a heading and whitespace group things perfectly
+   well without another box around them. */
+.panel,
+.card {
+  background: var(--surface-raised);
+  border: 1px solid var(--card-border);
+  padding: 1.5rem;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  margin-bottom: 1rem;
+}
+
+.panel .panel,
+.card .card {
+  background: none;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.summary-card {
+  background: var(--surface-overlay);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* Size and weight carry the hierarchy; colour carries meaning. A label and
+   its value used to be the same colour and weight, so the eye had no entry
+   point. */
+.summary-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.summary-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+.summary-subtext {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
+
+/* SEMANTIC STATE.
+   --critical is for a threshold that has been BREACHED — overspent, below
+   minimum, already expired. Plenty of figures are merely worth a look:
+   contracts ending soon, transactions not yet allocated. Those are .warn.
+   Ordinary counts are neither: they get --text. When every count is red,
+   real problems stop registering. */
+.good {
+  color: var(--success);
+}
+
+.warn {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.bad {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+/* The non-colour half of a status. Inherits the good/bad colour so the two
+   reinforce, but stays legible in greyscale, in print, and to the ~8% of men
+   with a colour vision deficiency — which is most of the people using the
+   ops and maintenance apps. */
+.variance-flag {
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-overlay);
+  color: var(--text-muted);
+}
+
+.badge-good {
+  background: var(--surface-overlay);
+  color: var(--success);
+}
+
+.badge-warn {
+  background: var(--surface-overlay);
+  color: var(--warning);
+}
+
+.badge-bad {
+  background: var(--surface-overlay);
+  color: var(--critical);
+}
+
+.message {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2rem 0 1rem;
+}
+
+/* ==========================================================================
+   6. MOBILE
+   ========================================================================== */
+
+.bottom-nav,
+.mobile-loc-bar {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    display: none;
+  }
+
+  .mobile-loc-bar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 8px 14px;
+    background: var(--surface-raised);
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-loc-btn {
+    flex-shrink: 0;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid transparent;
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+
+  .mobile-loc-btn.active-ZC,
+  .mobile-loc-btn.active-EC,
+  .mobile-loc-btn.active-SC {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
+
+  .mobile-period-input {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .panel,
+  .card {
+    padding: 1rem;
+  }
+
+  /* Bottom nav replaces the rail below 768px. Same dark surface as the rail,
+     so the app keeps one silhouette whichever way it is being held. */
+  .bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    padding: 8px;
+    /* Clears the home indicator on a notched phone — without this the last
+       nav item sits under it and cannot be tapped. */
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: var(--sidebar-bg);
+    color: var(--sidebar-text);
+    border-top: 1px solid var(--sidebar-line);
+  }
+
+  .main {
+    padding-bottom: 70px;
+  }
+}
+
+/* The slide-up menu sheet, and the bottom bar it belongs to. Both sit on the
+   rail surface rather than a page surface, in both modes. */
+.bottom-nav,
+.nav-sheet {
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+}
+
+.nav-sheet-title {
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sidebar-text);
+}
+
+.nav-sheet-item {
+  color: var(--sidebar-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+.nav-sheet-item.active {
+  color: var(--accent-on-dark);
+  background: var(--accent-on-dark-wash);
+}

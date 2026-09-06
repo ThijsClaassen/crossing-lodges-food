@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { sb, LOCATIONS, currentPeriod, UNITS } from './sb.js'
-import { colors, fonts, css } from './theme.js'
+import { colors, fonts } from './theme.js'
 import BarcodeScanner from './BarcodeScanner.jsx'
 import { transferEffect, incomingTransfers, outstandingSent, daysInTransit } from './transferEngine.js'
 import { supabase } from './supabaseClient.js'
@@ -1049,7 +1049,6 @@ function AuthenticatedApp() {
 
   return (
     <div className="shell">
-      <style>{css}</style>
 
       {/* ── DESKTOP SIDEBAR — same shell/sidebar/nav pattern as Ops/Maintenance,
           tabs listed top-to-bottom on the left (2026-08-17). Hidden <=768px;
