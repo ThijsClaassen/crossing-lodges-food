@@ -1,4 +1,4 @@
-/* GENERATED — do not edit. Source: tools/shared-styles/core.css (b86a61744334)
+/* GENERATED — do not edit. Source: tools/shared-styles/core.css (2b760a2b8f40)
    Edit the source and re-run tools/distribute_styles.mjs. Local rules for
    this app belong in app.css, which loads after this file. */
 /* ==========================================================================
@@ -275,6 +275,16 @@ body {
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Tabular figures globally, not just on .numeric.
+     Space Mono used to give these apps column alignment as a side effect of
+     being monospace. Dropping it for Inter would have lost that everywhere a
+     number is styled inline rather than by class — and there are ~450 inline
+     style objects across the six apps, so "just add .numeric" was never
+     going to reach them all. Setting it on body means every figure lines up
+     regardless of how it was styled. Inter's tabular digits are a shade
+     wider in prose, which is a fair trade in a product that is mostly
+     tables. */
+  font-variant-numeric: tabular-nums;
 }
 
 h1,
