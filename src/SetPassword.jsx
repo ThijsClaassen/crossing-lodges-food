@@ -1,65 +1,21 @@
 import { useState } from 'react'
 import { supabase } from './supabaseClient.js'
-import { colors, fonts } from './theme.js'
+import { APP_NAME } from './appName.js'
+import { LOGIN_CSS, BRAND_NAME, BRAND_LOGO } from './loginTheme.js'
 
-// Shown once, right after someone lands back in the app from an invite or
-// password-reset email link — same component/purpose as the Finance
-// Dashboard's (2026-08-08). Without this, a freshly-invited user would land
-// on the dashboard with a valid session but no password they could actually
-// log back in with next time.
-const styles = {
-  screen: {
-    fontFamily: fonts.body,
-    background: colors.bg,
-    minHeight: '100vh',
-    color: colors.cream,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  card: {
-    background: colors.panel,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 12,
-    padding: 20,
-    width: 300,
-    boxSizing: 'border-box',
-  },
-  title: {
-    fontFamily: fonts.heading,
-    fontSize: 20,
-    fontWeight: 600,
-    marginBottom: 8,
-    textAlign: 'center',
-    color: colors.goldLt,
-  },
-  message: { fontSize: 12, color: colors.muted, marginBottom: 14, textAlign: 'center' },
-  input: {
-    width: '100%',
-    padding: '7px 9px',
-    borderRadius: 8,
-    border: `1px solid ${colors.border}`,
-    background: colors.bg,
-    color: colors.cream,
-    fontSize: 13,
-    boxSizing: 'border-box',
-    marginBottom: 10,
-  },
-  button: {
-    width: '100%',
-    padding: '9px 14px',
-    borderRadius: 8,
-    border: 'none',
-    background: colors.navy,
-    color: colors.cream,
-    fontWeight: 600,
-    fontSize: 13,
-    cursor: 'pointer',
-    marginTop: 4,
-  },
-  error: { color: colors.danger, fontSize: 12, marginTop: 8 },
-}
-
+// Choose a password. SHARED FILE (2026-09-24).
+//
+// IDENTICAL IN EVERY APP, byte for byte — see Login.jsx. Edit here, run
+// tools/sync_login.mjs, and tools/login_screen_test.mjs holds the copies to it.
+//
+// Shown once, when someone lands back in the app from an invite or
+// password-reset email. Without it a freshly-invited user would arrive with a
+// valid session and no password to log back in with next time.
+//
+// Deliberately wears the same furniture as the sign-in screen: same brand
+// mark, same card, same field styling. It is the second thing a new member of
+// staff ever sees, and the first impression of the product should not change
+// between two consecutive screens.
 export default function SetPassword({ onDone }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -92,32 +48,51 @@ export default function SetPassword({ onDone }) {
   }
 
   return (
-    <div style={styles.screen}>
-      <form onSubmit={handleSubmit} style={styles.card}>
-        <div style={styles.title}>Set your password</div>
-        <div style={styles.message}>Choose a password for your account — you'll use this to log in from now on.</div>
-        <input
-          type="password"
-          placeholder="New password"
-          style={styles.input}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoFocus
-          autoComplete="new-password"
-        />
-        <input
-          type="password"
-          placeholder="Confirm password"
-          style={styles.input}
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-          autoComplete="new-password"
-        />
-        {error && <div style={styles.error}>{error}</div>}
-        <button type="submit" style={styles.button} disabled={saving}>
-          {saving ? 'Saving…' : 'Set password and continue'}
-        </button>
-      </form>
-    </div>
+    <>
+      <style>{LOGIN_CSS}</style>
+      <div className="cl-login">
+        <div className={BRAND_LOGO ? 'cl-login-mark has-logo' : 'cl-login-mark'}>
+          {BRAND_LOGO && <img src={BRAND_LOGO} alt={BRAND_NAME} />}
+          <div className="cl-login-brand">{BRAND_NAME}</div>
+          <div className="cl-login-app">{APP_NAME}</div>
+        </div>
+
+        <form className="cl-login-card" onSubmit={handleSubmit}>
+          <h1 className="cl-login-title">Set your password</h1>
+
+          <div className="cl-login-field">
+            <label htmlFor="cl-pw-new">New password</label>
+            <input
+              id="cl-pw-new"
+              type="password"
+              autoFocus
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="At least 6 characters"
+            />
+          </div>
+
+          <div className="cl-login-field">
+            <label htmlFor="cl-pw-confirm">Confirm password</label>
+            <input
+              id="cl-pw-confirm"
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Type it again"
+            />
+          </div>
+
+          <button className="cl-login-button" type="submit" disabled={saving}>
+            {saving ? 'Saving…' : 'Save password'}
+          </button>
+
+          {error && <p className="cl-login-error">{error}</p>}
+          <p className="cl-login-note">You'll use this to sign in from now on.</p>
+        </form>
+      </div>
+    </>
   )
 }
