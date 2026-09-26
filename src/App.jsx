@@ -1269,6 +1269,7 @@ function AuthenticatedApp() {
                 metricsByItem={metricsByItem}
                 location={location}
                 period={period}
+                companyId={companyId}
                 onSave={upsertLocalStockPeriods}
               />
             )}
@@ -2623,13 +2624,17 @@ function SuppliersTab({ suppliers, location, companyId, onAdd, onUpdate, onRemov
 // for the current period.
 // ---------------------------------------------------------------------------
 
-function OpeningTab({ items, stockByItem, metricsByItem, location, period, onSave }) {
+function OpeningTab({ items, stockByItem, metricsByItem, location, period, companyId, onSave }) {
   async function saveOpening(item, field, value) {
     const sp = stockByItem[item.id]
     if (!sp) return
     const saved = await sb.upsert(
       'food_stock_periods',
       {
+        // company_id is set explicitly on EVERY write. The column used to
+        // carry a default pointing at Crossing Lodges, which hid this
+        // omission; drop_company_id_defaults.sql removed it (#505).
+        company_id: companyId,
         item_id: item.id,
         location_id: location,
         period,
