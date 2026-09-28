@@ -2167,7 +2167,9 @@ function Drawer({ title, meta, tabs, tab, onTab, onClose, footer, children }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
-    // Fit the content (2026-09-28, Thijs: "if not all information fits, I
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  // Fit the content (2026-09-28, Thijs: "if not all information fits, I
   // want the drawer to be bigger, so all info fits in one screen"). The
   // body is measured after every render; if anything would need a sideways
   // scroll — a wide table, mostly — the drawer grows by exactly that much,
@@ -2192,8 +2194,6 @@ function Drawer({ title, meta, tabs, tab, onTab, onClose, footer, children }) {
     mo.observe(el, { childList: true, subtree: true, attributes: true })
     return () => { ro.disconnect(); mo.disconnect() }
   }, [tab])
-  return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} />
