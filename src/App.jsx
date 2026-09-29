@@ -22,6 +22,7 @@ import {
   chargeMembersFromSlip,
 } from './memberPurchase.js'
 import { wholeLine, validateSplits, planWrites, proRata } from './splitLines.js'
+import { isoDate, todayIso } from './dates.js'
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -50,7 +51,7 @@ function toPeriod(dateStr) {
 // The rest of this file inlines this expression; extracted here because the
 // Transfers tab needs it in several places.
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return todayIso()
 }
 
 function fmt(n, decimals = 2) {
@@ -2949,7 +2950,7 @@ function SlipScanCard({ items, location, companyId, onApproved, onSlipAttached, 
       })
 
       setReview({
-        date: data.date_guess || new Date().toISOString().slice(0, 10),
+        date: data.date_guess || todayIso(),
         supplier: data.supplier_guess || '',
         slipTotal: data.slip_total ?? null,
         pricesIncludeVat,
@@ -3498,7 +3499,7 @@ function ViewSlipLink({ storagePath }) {
 // memberBillingEnabled is true for the current company (Demo only today).
 function MemberPurchaseCard({ companyId, location, refreshSignal }) {
   const [members, setMembers] = useState([])
-  const [form, setForm] = useState({ member_id: '', date: new Date().toISOString().slice(0, 10), description: '', amount: '' })
+  const [form, setForm] = useState({ member_id: '', date: todayIso(), description: '', amount: '' })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -3714,7 +3715,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
   const [showCredits, setShowCredits] = useState(false)
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
     units: '',
     packs: '',
     total_cost_excl_vat: '',
@@ -3723,6 +3724,13 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
     pendingSlipName: '',
   })
   const [saving, setSaving] = useState(false)
+  // Readability round (2026-09-29): the hand-typed purchase is a one-screen
+  // drawer behind "+ Log a purchase" (scanning stays the first thing on the
+  // page); the list gets a search and two filters.
+  const [logOpen, setLogOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [supFilter, setSupFilter] = useState('')
+  const [noSlipOnly, setNoSlipOnly] = useState(false)
 
   // Order/delivery packs (2026-08-17) — a supplier slip usually lists "qty
   // 2" meaning 2 six-packs, not 2 cans. order_pack_size on the item (set on
@@ -3742,7 +3750,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
     setForm((f) => ({ ...f, pendingSlipBlob: resized, pendingSlipName: file.name }))
   }
 
-  async function addPurchase() {
+  async function addPurchase({ again = false } = {}) {
     if (!form.item_id || !form.units) return
     setSaving(true)
     try {
@@ -3768,14 +3776,19 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         supplier: form.supplier,
         slip_id: slipId,
       })
-      setForm({ ...form, units: '', packs: '', total_cost_excl_vat: '', supplier: '', pendingSlipBlob: null, pendingSlipName: '' })
+      // "Save & add another" keeps the date and supplier — a slip typed in
+      // by hand is several lines from one supplier on one day.
+      setForm({ ...form, item_id: again ? '' : form.item_id, units: '', packs: '', total_cost_excl_vat: '', supplier: again ? form.supplier : '', pendingSlipBlob: null, pendingSlipName: '' })
       onAdd(row)
+      if (!again) setLogOpen(false)
     } finally {
       setSaving(false)
     }
   }
 
   async function removePurchase(id) {
+    const p = purchases.find((x) => x.id === id)
+    if (!window.confirm(`Delete this purchase${p ? ` — ${itemName(p.item_id)}, ${fmt(p.units, 1)} ${itemUnit(p.item_id)} on ${p.date}` : ''}?`)) return
     await sb.remove('food_purchases', { id })
     onRemove(id)
   }
@@ -3800,11 +3813,6 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         <MemberPurchaseCard companyId={companyId} location={location} refreshSignal={memberPendingRefresh} />
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
-        <button style={styles.buttonGhost} onClick={() => setShowCredits((s) => !s)}>
-          {showCredits ? 'Hide Credit Notes' : '+ Credit Note'}
-        </button>
-      </div>
       {showCredits && (
         <CreditNotesTab
           items={items}
@@ -3823,146 +3831,194 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         />
       )}
 
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>Log a purchase manually</div>
-        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          Units are in the item's purchase unit (shown in the Items tab).
-        </div>
-        <div style={styles.formGrid}>
-          <div>
-            <label style={styles.label}>Item</label>
-            <SearchableSelect
-              value={form.item_id}
-              onChange={(v) => setForm({ ...form, item_id: v })}
-              options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
-              placeholder="Select item…"
+      <PurchaseList
+        purchases={purchases}
+        items={items}
+        suppliers={suppliers}
+        period={period}
+        slips={slips}
+        search={search}
+        setSearch={setSearch}
+        supFilter={supFilter}
+        setSupFilter={setSupFilter}
+        noSlipOnly={noSlipOnly}
+        setNoSlipOnly={setNoSlipOnly}
+        itemName={itemName}
+        itemUnit={itemUnit}
+        onLog={() => setLogOpen(true)}
+        onToggleCredits={() => setShowCredits((v) => !v)}
+        showCredits={showCredits}
+        onRemove={removePurchase}
+        renderSlip={(p) =>
+          p.slip_id && slips[p.slip_id] ? (
+            <ViewSlipLink storagePath={slips[p.slip_id].storage_path} />
+          ) : (
+            <AttachSlipButton
+              companyId={companyId}
+              locationId={location}
+              purchaseId={p.id}
+              onAttached={(slip) => { onSlipAttached(slip); onUpdate({ ...p, slip_id: slip.id }) }}
             />
-          </div>
-          <div>
-            <label style={styles.label}>Date</label>
-            <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-          </div>
-          {packSize > 1 && (
-            <div>
-              <label style={styles.label}>
-                Packs ({selectedItem.order_pack_label || `${packSize}-pack`})
-              </label>
-              <input
-                type="number" inputMode="decimal"
-                style={styles.input}
-                value={form.packs}
-                onChange={(e) => {
-                  const packs = e.target.value
-                  setForm((f) => ({
-                    ...f,
-                    packs,
-                    units: packs === '' ? f.units : String(Number(packs) * packSize),
-                  }))
-                }}
+          )
+        }
+      />
+
+      {logOpen && (
+        <Drawer
+          title="Log a purchase"
+          meta="Typed in by hand — use Scan a slip above when you have the slip"
+          onClose={() => setLogOpen(false)}
+          footer={
+            <>
+              <button style={styles.button} onClick={() => addPurchase()} disabled={saving || !form.item_id || !form.units}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button style={styles.buttonGhost} onClick={() => addPurchase({ again: true })} disabled={saving || !form.item_id || !form.units}>
+                Save &amp; add another
+              </button>
+              <button style={styles.buttonGhost} onClick={() => setLogOpen(false)}>Cancel</button>
+              <span className="hint">Units are in the item&apos;s purchase unit</span>
+            </>
+          }
+        >
+          <div className="drawer-grid">
+            <div className="full">
+              <label style={styles.label}>Item</label>
+              <SearchableSelect
+                value={form.item_id}
+                onChange={(v) => setForm({ ...form, item_id: v })}
+                options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
+                placeholder="Select item…"
               />
             </div>
-          )}
-          <div>
-            <label style={styles.label}>Units ({itemUnit(form.item_id) || '—'})</label>
-            <input
-              type="number" inputMode="decimal"
-              style={styles.input}
-              value={form.units}
-              onChange={(e) => setForm({ ...form, units: e.target.value, packs: '' })}
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Total cost (excl. VAT)</label>
-            <input
-              type="number" inputMode="decimal"
-              style={styles.input}
-              value={form.total_cost_excl_vat}
-              onChange={(e) => setForm({ ...form, total_cost_excl_vat: e.target.value })}
-            />
-            {/* The commonest way to get this wrong by hand is to divide a
-                zero-rated price by 1.15 out of habit, which is the same
-                13% understatement the scanner used to cause. Say so at the
-                point of entry rather than hoping it's remembered. */}
-            {selectedItem?.vat_treatment === VAT_ZERO && (
-              <div style={{ fontSize: 11, color: colors.muted, marginTop: 2 }}>
-                Zero-rated — enter the price exactly as printed, don't take 15% off.
+            <div>
+              <label style={styles.label}>Date</label>
+              <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            </div>
+            <div>
+              <label style={styles.label}>Supplier</label>
+              <SearchableSelect
+                value={form.supplier}
+                onChange={(v) => setForm({ ...form, supplier: v })}
+                options={suppliers.map((s) => ({ value: s.name, label: s.name }))}
+                placeholder="Select supplier…"
+              />
+            </div>
+            {packSize > 1 && (
+              <div>
+                <label style={styles.label}>Packs ({selectedItem.order_pack_label || `${packSize}-pack`})</label>
+                <input
+                  type="number" inputMode="decimal"
+                  style={styles.input}
+                  value={form.packs}
+                  onChange={(e) => {
+                    const packs = e.target.value
+                    setForm((f) => ({ ...f, packs, units: packs === '' ? f.units : String(Number(packs) * packSize) }))
+                  }}
+                />
               </div>
             )}
+            <div>
+              <label style={styles.label}>Units ({itemUnit(form.item_id) || '—'})</label>
+              <input type="number" inputMode="decimal" style={styles.input} value={form.units} onChange={(e) => setForm({ ...form, units: e.target.value, packs: '' })} />
+            </div>
+            <div>
+              <label style={styles.label}>Total cost (excl. VAT)</label>
+              <input type="number" inputMode="decimal" style={styles.input} value={form.total_cost_excl_vat} onChange={(e) => setForm({ ...form, total_cost_excl_vat: e.target.value })} />
+              {/* The commonest hand-typing mistake is dividing a zero-rated
+                  price by 1.15 out of habit — the same 13% understatement the
+                  scanner used to cause. Said at the point of entry. */}
+              {selectedItem?.vat_treatment === VAT_ZERO && (
+                <div className="help">Zero-rated — enter the price exactly as printed, don&apos;t take 15% off.</div>
+              )}
+            </div>
+            <div className="full">
+              <label style={styles.label}>Slip photo (optional)</label>
+              <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile} />
+              {form.pendingSlipName && <div className="help" style={{ color: colors.ok }}>Attached: {form.pendingSlipName}</div>}
+            </div>
           </div>
-          <div>
-            <label style={styles.label}>Supplier</label>
-            <SearchableSelect
-              value={form.supplier}
-              onChange={(v) => setForm({ ...form, supplier: v })}
-              options={suppliers.map((s) => ({ value: s.name, label: s.name }))}
-              placeholder="Select supplier…"
-            />
-          </div>
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={styles.label}>Slip photo (optional — use if you didn't use Scan above)</label>
-          <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile} />
-          {form.pendingSlipName && (
-            <div style={{ fontSize: 11, color: colors.ok, marginTop: 4 }}>Attached: {form.pendingSlipName}</div>
-          )}
-        </div>
-        <button style={styles.button} onClick={addPurchase} disabled={saving}>
-          {saving ? 'Saving…' : 'Add purchase'}
-        </button>
-      </div>
+        </Drawer>
+      )}
+    </>
+  )
+}
 
-      <CollapsibleCard title={`Purchases in ${period}`}>
-        <div style={styles.tableWrap}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Date</th>
-              <th style={styles.th}>Item</th>
-              <th style={styles.th}>Units</th>
-              <th style={styles.th}>Cost</th>
-              <th style={styles.th}>Supplier</th>
-              <th style={styles.th}>Slip</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {purchases.map((p) => (
-              <tr key={p.id}>
-                <td style={styles.td}>{p.date}</td>
-                <td style={styles.td}>{itemName(p.item_id)}</td>
-                <td style={styles.tdNum}>{fmt(p.units, 1)}</td>
-                <td style={styles.tdNum}>{fmt(p.total_cost_excl_vat)}</td>
-                <td style={styles.td}>{p.supplier || '—'}</td>
-                <td style={styles.td}>
-                  {p.slip_id && slips[p.slip_id] ? (
-                    <ViewSlipLink storagePath={slips[p.slip_id].storage_path} />
-                  ) : (
-                    <AttachSlipButton
-                      companyId={companyId}
-                      locationId={location}
-                      purchaseId={p.id}
-                      onAttached={(slip) => { onSlipAttached(slip); onUpdate({ ...p, slip_id: slip.id }) }}
-                    />
-                  )}
-                </td>
-                <td style={styles.td}>
-                  <button style={styles.buttonDanger} onClick={() => removePurchase(p.id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {purchases.length === 0 && (
-              <tr>
-                <td style={styles.td} colSpan={7}>
-                  No purchases logged yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+
+// The purchases list (readability round, 2026-09-29): a page head that says
+// what the month holds, a search and two filters, and a slim table — date,
+// item with supplier under it, units, cost, slip. Kept as its own component
+// so the Purchases tab reads top to bottom: scan, then the list.
+function PurchaseList({ purchases, items, suppliers, period, slips, search, setSearch, supFilter, setSupFilter, noSlipOnly, setNoSlipOnly, itemName, itemUnit, onLog, onToggleCredits, showCredits, onRemove, renderSlip }) {
+  const total = purchases.reduce((t, p) => t + (Number(p.total_cost_excl_vat) || 0), 0)
+  const supplierNames = [...new Set(purchases.map((p) => p.supplier).filter(Boolean))].sort()
+  const noSlip = purchases.filter((p) => !(p.slip_id && slips?.[p.slip_id])).length
+  const q = search.trim().toLowerCase()
+  const rows = purchases
+    .filter((p) => !q || `${itemName(p.item_id)} ${p.supplier || ''}`.toLowerCase().includes(q))
+    .filter((p) => !supFilter || p.supplier === supFilter)
+    .filter((p) => !noSlipOnly || !(p.slip_id && slips?.[p.slip_id]))
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <div style={{ fontWeight: 600 }}>Purchases in {period}</div>
+          <div style={{ fontSize: 13, color: colors.muted }}>
+            {purchases.length} line{purchases.length === 1 ? '' : 's'} · R {fmt(total)} excl. VAT · {supplierNames.length} supplier{supplierNames.length === 1 ? '' : 's'}
+            {noSlip ? ` · ${noSlip} without a slip` : ''}
+          </div>
         </div>
-      </CollapsibleCard>
+        <div className="actions">
+          <button style={styles.buttonGhost} onClick={onToggleCredits}>{showCredits ? 'Hide credit notes' : '+ Credit note'}</button>
+          <button style={styles.button} onClick={onLog}>+ Log a purchase</button>
+        </div>
+      </div>
+      <div className="toolbar">
+        <input placeholder="Search item or supplier…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select value={supFilter} onChange={(e) => setSupFilter(e.target.value)}>
+          <option value="">All suppliers</option>
+          {supplierNames.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <label style={{ fontSize: 13, color: colors.muted, display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" checked={noSlipOnly} onChange={(e) => setNoSlipOnly(e.target.checked)} /> Without a slip only
+        </label>
+      </div>
+      <div style={styles.card}>
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Date</th>
+                <th style={styles.th}>Item</th>
+                <th style={styles.th}>Units</th>
+                <th style={styles.th}>Cost</th>
+                <th style={styles.th}>Slip</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id}>
+                  <td style={styles.td}>{p.date}</td>
+                  <td style={{ ...styles.td, whiteSpace: 'normal' }}>
+                    <strong>{itemName(p.item_id)}</strong>
+                    <span className="sub2">{p.supplier || 'no supplier'}</span>
+                  </td>
+                  <td style={styles.tdNum}>{fmt(p.units, 1)} {itemUnit(p.item_id)}</td>
+                  <td style={styles.tdNum}>R {fmt(p.total_cost_excl_vat)}</td>
+                  <td style={styles.td}>{renderSlip(p)}</td>
+                  <td style={{ ...styles.td, textAlign: 'right' }}>
+                    <button style={styles.buttonGhost} onClick={() => onRemove(p.id)} title="Delete this purchase">Delete</button>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr><td style={styles.td} colSpan={6}>{purchases.length === 0 ? 'No purchases logged this month yet — scan a slip above, or log one by hand.' : 'Nothing matches those filters.'}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </>
   )
 }
@@ -3977,12 +4033,17 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
 function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove }) {
   const [form, setForm] = useState({
     item_id: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
     qty: '',
     reason: ISSUE_REASONS[0],
     note: '',
   })
   const [saving, setSaving] = useState(false)
+  // Readability round (2026-09-29): the log form is a one-screen drawer with
+  // "Save & add another"; the list gets a search and a reason filter.
+  const [logOpen, setLogOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [reasonFilter, setReasonFilter] = useState('')
 
   // Category-then-item picker (2026-08-17) — the item list got too long to
   // scroll through directly, so pick a category first (same two-step
@@ -3993,7 +4054,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
   const uncategorisedCount = items.filter((it) => !it.category).length
   const itemsInCat = category ? items.filter((it) => (category === '__none__' ? !it.category : it.category === category)) : []
 
-  async function addIssue() {
+  async function addIssue({ again = false } = {}) {
     if (!form.item_id || !form.qty) return
     setSaving(true)
     const [row] = await sb.insert('food_issues', {
@@ -4006,13 +4067,18 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
       reason: form.reason,
       note: form.note,
     })
+    // "Save & add another" keeps the date, reason and category — issues are
+    // usually logged a handful at a time from the same shelf.
     setForm({ ...form, item_id: '', qty: '', note: '' })
-    setCategory('')
+    if (!again) setCategory('')
     setSaving(false)
     onAdd(row)
+    if (!again) setLogOpen(false)
   }
 
   async function removeIssue(id) {
+    const i = issues.find((x) => x.id === id)
+    if (!window.confirm(`Delete this issue${i ? ` — ${itemName(i.item_id)}, ${fmt(i.qty, 1)} ${itemUnit(i.item_id)} on ${i.date}` : ''}?`)) return
     await sb.remove('food_issues', { id })
     onRemove(id)
   }
@@ -4020,118 +4086,127 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
   const itemName = (id) => items.find((i) => i.id === id)?.name || '—'
   const itemUnit = (id) => items.find((i) => i.id === id)?.purchase_unit || ''
 
+  const writeOffs = issues.filter((i) => i.reason && i.reason !== 'Service')
+  const q = search.trim().toLowerCase()
+  const rows = issues
+    .filter((i) => !q || `${itemName(i.item_id)} ${i.note || ''}`.toLowerCase().includes(q))
+    .filter((i) => !reasonFilter || (reasonFilter === '__writeoff__' ? i.reason && i.reason !== 'Service' : (i.reason || 'Service') === reasonFilter))
+
   return (
     <>
+      <div className="page-head">
+        <div>
+          <div style={{ fontWeight: 600 }}>
+            Issues in {period}
+            <span className="why" title="'Service' is normal kitchen use — dishes cooked and served. Everything else (Breakage, Expired, Staff, Returned to Supplier, Other) is a write-off, tracked separately on the Dashboard. Both feed the Usage tab's expected stock. Quantities are in each item's purchase unit (same as Purchases and Count), not its recipe unit.">?</span>
+          </div>
+          <div style={{ fontSize: 13, color: colors.muted }}>
+            {issues.length} line{issues.length === 1 ? '' : 's'} · {issues.length - writeOffs.length} service · {writeOffs.length} write-off{writeOffs.length === 1 ? '' : 's'}
+          </div>
+        </div>
+        <div className="actions">
+          <button style={styles.button} onClick={() => setLogOpen(true)}>+ Log an issue</button>
+        </div>
+      </div>
+      <div className="toolbar">
+        <input placeholder="Search item or note…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select value={reasonFilter} onChange={(e) => setReasonFilter(e.target.value)}>
+          <option value="">All reasons</option>
+          <option value="__writeoff__">Write-offs only</option>
+          {ISSUE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </div>
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Log issued stock</div>
-        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          'Service' is normal kitchen use — dishes cooked and served. Everything else (Breakage,
-          Expired, Staff, Other) is a write-off, tracked separately on the Dashboard. Both feed the
-          Usage tab's expected-stock calculation. Quantities are in each item's purchase unit (same
-          as Purchases and Count), not its recipe unit.
-        </div>
-        <div style={styles.formGrid}>
-          <div>
-            <label style={styles.label}>Category</label>
-            <select
-              style={styles.input}
-              value={category}
-              onChange={(e) => { setCategory(e.target.value); setForm({ ...form, item_id: '' }) }}
-            >
-              <option value="">Select category…</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
+        <div style={styles.tableWrap}>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Date</th>
+                <th style={styles.th}>Item</th>
+                <th style={styles.th}>Qty</th>
+                <th style={styles.th}>Reason</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((i) => (
+                <tr key={i.id}>
+                  <td style={styles.td}>{i.date}</td>
+                  <td style={{ ...styles.td, whiteSpace: 'normal' }}>
+                    <strong>{itemName(i.item_id)}</strong>
+                    {i.note && <span className="sub2">{i.note}</span>}
+                  </td>
+                  <td style={styles.tdNum}>{fmt(i.qty, 1)} {itemUnit(i.item_id)}</td>
+                  <td style={styles.td}>
+                    {!i.reason || i.reason === 'Service' ? i.reason || 'Service' : <span style={styles.badge('bad')}>{i.reason}</span>}
+                  </td>
+                  <td style={{ ...styles.td, textAlign: 'right' }}>
+                    <button style={styles.buttonGhost} onClick={() => removeIssue(i.id)} title="Delete this issue">Delete</button>
+                  </td>
+                </tr>
               ))}
-              {uncategorisedCount > 0 && <option value="__none__">Uncategorised</option>}
-            </select>
-          </div>
-          <div>
-            <label style={styles.label}>Item</label>
-            <SearchableSelect
-              value={form.item_id}
-              onChange={(v) => setForm({ ...form, item_id: v })}
-              options={itemsInCat.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
-              placeholder={category ? 'Select item…' : 'Pick a category first'}
-              disabled={!category}
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Date</label>
-            <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-          </div>
-          <div>
-            <label style={styles.label}>Qty issued ({itemUnit(form.item_id) || '—'})</label>
-            <input type="number" inputMode="decimal" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
-          </div>
-          <div>
-            <label style={styles.label}>Reason</label>
-            <select style={styles.input} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
-              {ISSUE_REASONS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={styles.label}>Note (optional)</label>
-            <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-          </div>
+              {rows.length === 0 && (
+                <tr><td style={styles.td} colSpan={5}>{issues.length === 0 ? 'No issues logged this month yet.' : 'Nothing matches those filters.'}</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        <button style={styles.button} onClick={addIssue} disabled={saving}>
-          {saving ? 'Saving…' : 'Add issue'}
-        </button>
       </div>
 
-      <CollapsibleCard title={`Issues in ${period}`}>
-        <div style={styles.tableWrap}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Date</th>
-              <th style={styles.th}>Item</th>
-              <th style={styles.th}>Qty</th>
-              <th style={styles.th}>Reason</th>
-              <th style={styles.th}>Note</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {issues.map((i) => (
-              <tr key={i.id}>
-                <td style={styles.td}>{i.date}</td>
-                <td style={styles.td}>{itemName(i.item_id)}</td>
-                <td style={styles.tdNum}>
-                  {fmt(i.qty, 1)} {itemUnit(i.item_id)}
-                </td>
-                <td style={styles.td}>
-                  {!i.reason || i.reason === 'Service' ? (
-                    i.reason || 'Service'
-                  ) : (
-                    <span style={styles.badge('bad')}>{i.reason}</span>
-                  )}
-                </td>
-                <td style={styles.td}>{i.note || '—'}</td>
-                <td style={styles.td}>
-                  <button style={styles.buttonDanger} onClick={() => removeIssue(i.id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {issues.length === 0 && (
-              <tr>
-                <td style={styles.td} colSpan={6}>
-                  No issues logged yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        </div>
-      </CollapsibleCard>
+      {logOpen && (
+        <Drawer
+          title="Log an issue"
+          meta="Stock that left the store — service or a write-off"
+          onClose={() => setLogOpen(false)}
+          footer={
+            <>
+              <button style={styles.button} onClick={() => addIssue()} disabled={saving || !form.item_id || !form.qty}>{saving ? 'Saving…' : 'Save'}</button>
+              <button style={styles.buttonGhost} onClick={() => addIssue({ again: true })} disabled={saving || !form.item_id || !form.qty}>Save &amp; add another</button>
+              <button style={styles.buttonGhost} onClick={() => setLogOpen(false)}>Cancel</button>
+              <span className="hint">Quantities in the item&apos;s purchase unit</span>
+            </>
+          }
+        >
+          <div className="drawer-grid">
+            <div>
+              <label style={styles.label}>Category</label>
+              <select style={styles.input} value={category} onChange={(e) => { setCategory(e.target.value); setForm({ ...form, item_id: '' }) }}>
+                <option value="">Select category…</option>
+                {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                {uncategorisedCount > 0 && <option value="__none__">Uncategorised</option>}
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Item</label>
+              <SearchableSelect
+                value={form.item_id}
+                onChange={(v) => setForm({ ...form, item_id: v })}
+                options={itemsInCat.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
+                placeholder={category ? 'Select item…' : 'Pick a category first'}
+                disabled={!category}
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Qty issued ({itemUnit(form.item_id) || '—'})</label>
+              <input type="number" inputMode="decimal" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
+            </div>
+            <div>
+              <label style={styles.label}>Reason</label>
+              <select style={styles.input} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
+                {ISSUE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Date</label>
+              <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            </div>
+            <div>
+              <label style={styles.label}>Note (optional)</label>
+              <input style={styles.input} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+            </div>
+          </div>
+        </Drawer>
+      )}
     </>
   )
 }
@@ -4149,7 +4224,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
 function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location, companyId, period, onAdd, onRemove, onIssueAdd, onIssueRemove, slips, onSlipAttached }) {
   const [form, setForm] = useState({
     item_id: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
     qty: '',
     unit_cost: '',
     supplier: '',
@@ -4390,6 +4465,25 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
   const [linking, setLinking] = useState(false)
   const inputRefs = useRef({})
   const showTheoretical = role === 'admin'
+  // Readability round (2026-09-29): rows grouped by category like the Items
+  // list, with a search and a category filter. Filtering HIDES rows rather
+  // than removing them — the count boxes are uncontrolled, so a removed row
+  // would lose what was typed into it before Submit.
+  const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState('')
+  const categoriesInCount = useMemo(() => Array.from(new Set(items.map((it) => it.category || 'Uncategorised'))).sort(), [items])
+  const countGroups = useMemo(() => {
+    const byCat = new Map()
+    for (const it of [...items].sort((a, b) => (a.category || 'zzz').localeCompare(b.category || 'zzz') || a.name.localeCompare(b.name))) {
+      const k = it.category || 'Uncategorised'
+      if (!byCat.has(k)) byCat.set(k, [])
+      byCat.get(k).push(it)
+    }
+    return [...byCat.entries()]
+  }, [items])
+  const countQ = search.trim().toLowerCase()
+  const rowVisible = (it) => (!countQ || `${it.name} ${it.barcode || ''}`.toLowerCase().includes(countQ)) && (!catFilter || (it.category || 'Uncategorised') === catFilter)
+  const countedThisPeriod = items.filter((it) => stockByItem[it.id]?.closing_count_units != null).length
 
   function focusItem(id) {
     setActiveScanItemId(id)
@@ -4408,6 +4502,9 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
     setScanning(false)
     if (match) {
       setLinkingBarcode(null)
+      // A filter must never hide the row a scan jumps to.
+      setSearch('')
+      setCatFilter('')
       setStatus(`Scanned: ${match.name} — type the count and press Enter to scan the next item.`)
       focusItem(match.id)
     } else {
@@ -4456,7 +4553,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
         opening_cost_per_unit: sp.opening_cost_per_unit ?? 0,
         closing_count_units: Number(raw),
         counted_by: countedBy || sp.counted_by || null,
-        count_date: new Date().toISOString().slice(0, 10),
+        count_date: todayIso(),
       })
     }
 
@@ -4473,28 +4570,31 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
 
   return (
     <>
-    <CollapsibleCard
-      title={`Physical stock count — ${period}`}
-      defaultOpen
-      headerExtra={
-        <button style={styles.buttonGhost} onClick={() => setScanning(true)}>
-          Scan barcode
-        </button>
-      }
-    >
-      <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-        Fields start empty each time — the grey number is just a reminder of the last count, not a
-        live value. Counts are in each item's purchase unit. Fill in what you're counting today,
-        then hit Submit; anything left blank is skipped and keeps its last saved count. Scanning a
-        packet jumps straight to its row — type the count and press Enter to scan the next one.
-      </div>
-      <div style={styles.formGrid}>
+      <div className="page-head">
         <div>
-          <label style={styles.label}>Counted by</label>
-          <input style={styles.input} value={countedBy} onChange={(e) => setCountedBy(e.target.value)} placeholder="Name" />
+          <div style={{ fontWeight: 600 }}>
+            Stock count — {period}
+            <span className="why" title="Fields start empty each time — the grey number is just a reminder of the last count, not a live value. Counts are in each item's purchase unit. Fill in what you're counting today, then Submit; anything left blank is skipped and keeps its last saved count. Scanning a packet jumps straight to its row — type the count and press Enter to scan the next one.">?</span>
+          </div>
+          <div style={{ fontSize: 13, color: colors.muted }}>
+            {items.length} items · {countedThisPeriod} with a count saved this month
+          </div>
+        </div>
+        <div className="actions">
+          <button style={styles.buttonGhost} onClick={() => setScanning(true)}>Scan barcode</button>
+          <button style={styles.button} onClick={submitCounts} disabled={submitting}>{submitting ? 'Saving…' : 'Submit count'}</button>
         </div>
       </div>
-
+      <div className="toolbar">
+        <input placeholder="Find an item or barcode…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+          <option value="">All categories</option>
+          {categoriesInCount.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input style={{ flex: 'none', maxWidth: 200 }} value={countedBy} onChange={(e) => setCountedBy(e.target.value)} placeholder="Counted by (name)" aria-label="Counted by" />
+      </div>
+      {status && <div style={{ fontSize: 13, color: colors.muted, margin: '-4px 0 10px' }}>{status}</div>}
+    <div style={styles.card}>
       {linkingBarcode && (
         <div style={styles.banner}>
           <span>Unknown barcode ({linkingBarcode}) — link it to an item:</span>
@@ -4527,12 +4627,21 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
           </tr>
         </thead>
         <tbody>
-          {items.map((it) => {
+          {countGroups.map(([cat, list]) => {
+            const anyVisible = list.some(rowVisible)
+            return (
+              <Fragment key={cat}>
+                <tr className="group-row" style={anyVisible ? undefined : { display: 'none' }}>
+                  <td style={styles.td} colSpan={showTheoretical ? 4 : 2}>
+                    <strong>{cat}</strong> <span style={{ color: colors.muted, fontSize: 12 }}>({list.length})</span>
+                  </td>
+                </tr>
+                {list.map((it) => {
             const m = metricsByItem[it.id]
             const sp = stockByItem[it.id]
             const active = activeScanItemId === it.id
             return (
-              <tr key={it.id} style={active ? { background: 'rgba(184,147,90,0.14)' } : undefined}>
+              <tr key={it.id} style={{ ...(active ? { background: 'rgba(184,147,90,0.14)' } : null), ...(rowVisible(it) ? null : { display: 'none' }) }}>
                 <td style={styles.td}>
                   {it.name}
                   {it.barcode && (
@@ -4565,6 +4674,9 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
                 )}
               </tr>
             )
+                })}
+              </Fragment>
+            )
           })}
         </tbody>
       </table>
@@ -4575,7 +4687,7 @@ function CountTab({ items, stockByItem, metricsByItem, location, companyId, peri
           {submitting ? 'Saving…' : 'Submit count'}
         </button>
       </div>
-    </CollapsibleCard>
+    </div>
       {scanning && <BarcodeScanner onScan={handleScan} onClose={() => setScanning(false)} />}
     </>
   )
@@ -5259,8 +5371,8 @@ function RecipeCard({ recipe, items, metricsByItem, ingredients, companyId, onRe
 // lives in foodSalesEngine.js. Admin-only, manual on purpose.
 // ---------------------------------------------------------------------------
 function defaultSyncDates() {
-  const end = new Date().toISOString().slice(0, 10)
-  const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const end = todayIso()
+  const start = isoDate(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
   return { start, end }
 }
 

@@ -47,3 +47,6 @@ td .sub2{display:block;color:var(--text-muted);font-size:11.5px;margin-top:2px;f
 @media (max-width:768px){.drawer{width:100%}.drawer-body{padding:16px}.drawer-head{padding:14px 16px 0}.drawer-foot{padding:12px 16px}.drawer-grid{grid-template-columns:1fr}}
 /* Category group rows in the Items list */
 tr.group-row td{background:var(--surface-overlay);border-top:2px solid var(--line);padding-top:8px;padding-bottom:7px}
+/* "?" explainer next to a heading (readability round 2026-09-29) — the long
+   paragraphs that used to open each card now sit behind it. */
+.why{display:inline-block;margin-left:6px;width:16px;height:16px;border-radius:50%;border:1px solid var(--line);font-size:10px;text-align:center;line-height:15px;color:var(--text-muted);cursor:help;vertical-align:middle;font-weight:400}
