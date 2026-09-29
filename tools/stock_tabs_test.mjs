@@ -32,6 +32,11 @@ check('purchases: the zero-rated warning is still at the point of entry', /Zero-
 check('purchases: delete asks first', /window\.confirm\(`Delete this purchase/.test(purchases))
 check('purchases: the old always-open manual form and collapsible list are gone', !/Log a purchase manually/.test(purchases) && !/<CollapsibleCard title=\{`Purchases in/.test(purchases))
 
+const credits = fn('CreditNotesTab')
+check('credit notes: "+ Credit note" opens a one-screen drawer (no always-open card, no toggle)', /<Drawer\s+title="Log a credit note"/.test(credits) && !/cardTitle\}>Log a credit note/.test(credits) && !/showCredits/.test(purchases) && /onLogCredit/.test(list))
+check('credit notes: Save & add another keeps the supplier; delete asks first', /addCreditNote\(\{ again: true \}\)/.test(credits) && /supplier: again \? form\.supplier : ''/.test(credits) && /window\.confirm\(`Delete this credit note/.test(credits))
+check('credit notes: the month list sits under the purchases list, only when there are any', /creditNotes\.length > 0 && \(/.test(credits) && purchases.indexOf('<CreditNotesTab') > purchases.indexOf('<PurchaseList'))
+
 const issues = fn('IssuesTab')
 check('issues: head with service / write-off counts, explainer behind ?', /Issues in \{period\}/.test(issues) && /write-off/.test(issues) && /className="why"/.test(issues))
 check('issues: search and reason filter incl. write-offs only', /Search item or note/.test(issues) && /__writeoff__/.test(issues))

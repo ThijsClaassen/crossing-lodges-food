@@ -3712,7 +3712,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
   // than its own nav tab: it's the same "wrong thing was bought" moment as
   // a purchase, just the reverse direction, so it belongs next to the
   // purchase form instead of forcing a tab switch to find it.
-  const [showCredits, setShowCredits] = useState(false)
+  const [creditLogOpen, setCreditLogOpen] = useState(false)
   const [form, setForm] = useState({
     item_id: items[0]?.id || '',
     date: todayIso(),
@@ -3813,24 +3813,6 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         <MemberPurchaseCard companyId={companyId} location={location} refreshSignal={memberPendingRefresh} />
       )}
 
-      {showCredits && (
-        <CreditNotesTab
-          items={items}
-          suppliers={suppliers}
-          creditNotes={creditNotes}
-          metricsByItem={metricsByItem}
-          location={location}
-          companyId={companyId}
-          period={period}
-          onAdd={onAddCredit}
-          onRemove={onRemoveCredit}
-          onIssueAdd={onIssueAdd}
-          onIssueRemove={onIssueRemove}
-          slips={slips}
-          onSlipAttached={onSlipAttached}
-        />
-      )}
-
       <PurchaseList
         purchases={purchases}
         items={items}
@@ -3846,8 +3828,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
         itemName={itemName}
         itemUnit={itemUnit}
         onLog={() => setLogOpen(true)}
-        onToggleCredits={() => setShowCredits((v) => !v)}
-        showCredits={showCredits}
+        onLogCredit={() => setCreditLogOpen(true)}
         onRemove={removePurchase}
         renderSlip={(p) =>
           p.slip_id && slips[p.slip_id] ? (
@@ -3861,6 +3842,24 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
             />
           )
         }
+      />
+
+      <CreditNotesTab
+        items={items}
+        suppliers={suppliers}
+        creditNotes={creditNotes}
+        metricsByItem={metricsByItem}
+        location={location}
+        companyId={companyId}
+        period={period}
+        onAdd={onAddCredit}
+        onRemove={onRemoveCredit}
+        onIssueAdd={onIssueAdd}
+        onIssueRemove={onIssueRemove}
+        slips={slips}
+        onSlipAttached={onSlipAttached}
+        logOpen={creditLogOpen}
+        onCloseLog={() => setCreditLogOpen(false)}
       />
 
       {logOpen && (
@@ -3949,7 +3948,7 @@ function PurchasesTab({ items, purchases, suppliers, location, companyId, period
 // what the month holds, a search and two filters, and a slim table — date,
 // item with supplier under it, units, cost, slip. Kept as its own component
 // so the Purchases tab reads top to bottom: scan, then the list.
-function PurchaseList({ purchases, items, suppliers, period, slips, search, setSearch, supFilter, setSupFilter, noSlipOnly, setNoSlipOnly, itemName, itemUnit, onLog, onToggleCredits, showCredits, onRemove, renderSlip }) {
+function PurchaseList({ purchases, items, suppliers, period, slips, search, setSearch, supFilter, setSupFilter, noSlipOnly, setNoSlipOnly, itemName, itemUnit, onLog, onLogCredit, onRemove, renderSlip }) {
   const total = purchases.reduce((t, p) => t + (Number(p.total_cost_excl_vat) || 0), 0)
   const supplierNames = [...new Set(purchases.map((p) => p.supplier).filter(Boolean))].sort()
   const noSlip = purchases.filter((p) => !(p.slip_id && slips?.[p.slip_id])).length
@@ -3969,7 +3968,7 @@ function PurchaseList({ purchases, items, suppliers, period, slips, search, setS
           </div>
         </div>
         <div className="actions">
-          <button style={styles.buttonGhost} onClick={onToggleCredits}>{showCredits ? 'Hide credit notes' : '+ Credit note'}</button>
+          <button style={styles.buttonGhost} onClick={onLogCredit} title="Stock going back to the supplier">+ Credit note</button>
           <button style={styles.button} onClick={onLog}>+ Log a purchase</button>
         </div>
       </div>
@@ -4221,7 +4220,7 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
 // back, for Finance Dashboard's supplier statement reconciliation later).
 // ---------------------------------------------------------------------------
 
-function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location, companyId, period, onAdd, onRemove, onIssueAdd, onIssueRemove, slips, onSlipAttached }) {
+function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location, companyId, period, onAdd, onRemove, onIssueAdd, onIssueRemove, slips, onSlipAttached, logOpen, onCloseLog }) {
   const [form, setForm] = useState({
     item_id: '',
     date: todayIso(),
@@ -4253,7 +4252,7 @@ function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location
     setForm((f) => ({ ...f, pendingSlipBlob: resized, pendingSlipName: file.name }))
   }
 
-  async function addCreditNote() {
+  async function addCreditNote({ again = false } = {}) {
     if (!form.item_id || !form.qty || !form.supplier) return
     setSaving(true)
     try {
@@ -4296,14 +4295,18 @@ function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location
         notes: form.notes || null,
         slip_id: slipId,
       })
-      setForm({ ...form, item_id: '', qty: '', unit_cost: '', credit_note_number: '', notes: '', pendingSlipBlob: null, pendingSlipName: '' })
+      // "Save & add another" keeps date, supplier and reason — returns
+      // usually go back to one supplier in one go.
+      setForm({ ...form, item_id: '', qty: '', unit_cost: '', supplier: again ? form.supplier : '', credit_note_number: '', notes: '', pendingSlipBlob: null, pendingSlipName: '' })
       onAdd(row)
+      if (!again) onCloseLog?.()
     } finally {
       setSaving(false)
     }
   }
 
   async function removeCreditNote(c) {
+    if (!window.confirm(`Delete this credit note — ${c.item_description || itemName(c.item_id)}, R ${fmt(c.total_credit)}? This also puts the returned stock back.`)) return
     await sb.remove('supplier_credit_notes', { id: c.id })
     onRemove(c.id)
     // Reverse the stock deduction it caused, so a mistaken entry doesn't
@@ -4318,140 +4321,139 @@ function CreditNotesTab({ items, suppliers, creditNotes, metricsByItem, location
   const reasonLabel = (v) => CREDIT_REASONS.find((r) => r.value === v)?.label || v
   const totalCredit = creditNotes.reduce((sum, c) => sum + Number(c.total_credit || 0), 0)
 
+  const previewCredit = (Number(form.qty) || 0) * (Number(form.unit_cost) || 0)
+  const canSave = !saving && form.item_id && form.qty && form.supplier
+
+  // Readability round (2026-09-29): logging is a one-screen drawer opened
+  // from "+ Credit note" on the Purchases head; the month's credit notes sit
+  // under the purchases list, only when there are any.
   return (
     <>
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>Log a credit note</div>
-        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>
-          For when the wrong item was bought and has to go back to the supplier — this deducts the stock
-          (as a "Returned to Supplier" issue) and keeps a record of what the supplier owes back, for
-          checking against their statement later. The credit note number can be filled in later if you
-          don't have it yet.
-        </div>
-        <div style={styles.formGrid}>
-          <div>
-            <label style={styles.label}>Item</label>
-            <SearchableSelect
-              value={form.item_id}
-              onChange={pickItem}
-              options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
-              placeholder="Select item…"
-            />
+      {creditNotes.length > 0 && (
+        <>
+          <div className="page-head" style={{ marginTop: 18 }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>
+                Credit notes in {period}
+                <span className="why" title="For when the wrong item was bought and has to go back to the supplier. Logging one deducts the stock (as a 'Returned to Supplier' issue) and records what the supplier owes back, for checking against their statement later. The credit note number can be filled in later.">?</span>
+              </div>
+              <div style={{ fontSize: 13, color: colors.muted }}>
+                {creditNotes.length} line{creditNotes.length === 1 ? '' : 's'} · R {fmt(totalCredit)} owed back by suppliers
+                {creditNotes.some((c) => !c.credit_note_number) ? ` · ${creditNotes.filter((c) => !c.credit_note_number).length} still without a credit note #` : ''}
+              </div>
+            </div>
           </div>
-          <div>
-            <label style={styles.label}>Date</label>
-            <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+          <div style={styles.card}>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Date</th>
+                    <th style={styles.th}>Item</th>
+                    <th style={styles.th}>Qty</th>
+                    <th style={styles.th}>Credit</th>
+                    <th style={styles.th}>Credit note #</th>
+                    <th style={styles.th}>Slip</th>
+                    <th style={styles.th}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {creditNotes.map((c) => (
+                    <tr key={c.id}>
+                      <td style={styles.td}>{c.date}</td>
+                      <td style={{ ...styles.td, whiteSpace: 'normal' }}>
+                        <strong>{c.item_description || itemName(c.item_id)}</strong>
+                        <span className="sub2">{c.supplier} · {reasonLabel(c.reason)}</span>
+                      </td>
+                      <td style={styles.tdNum}>{fmt(c.qty, 1)}</td>
+                      <td style={styles.tdNum}>R {fmt(c.total_credit)}</td>
+                      <td style={styles.td}>{c.credit_note_number || <span style={{ color: colors.muted }}>not yet</span>}</td>
+                      <td style={styles.td}>
+                        {c.slip_id && slips[c.slip_id] ? <ViewSlipLink storagePath={slips[c.slip_id].storage_path} /> : '—'}
+                      </td>
+                      <td style={{ ...styles.td, textAlign: 'right' }}>
+                        <button style={styles.buttonGhost} onClick={() => removeCreditNote(c)} title="Delete this credit note">Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div>
-            <label style={styles.label}>Qty returned {selectedItem ? `(${selectedItem.purchase_unit})` : ''}</label>
-            <input type="number" inputMode="decimal" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
-          </div>
-          <div>
-            <label style={styles.label}>Unit cost excl. VAT (R)</label>
-            <input type="number" inputMode="decimal" step="0.01" style={styles.input} value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} />
-          </div>
-          <div>
-            <label style={styles.label}>Supplier</label>
-            <SearchableSelect
-              value={form.supplier}
-              onChange={(v) => setForm({ ...form, supplier: v })}
-              options={suppliers.map((s) => ({ value: s.name, label: s.name }))}
-              placeholder="Select supplier…"
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Reason</label>
-            <select style={styles.input} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
-              {CREDIT_REASONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={styles.label}>Supplier's credit note # (optional)</label>
-            <input
-              style={styles.input}
-              value={form.credit_note_number}
-              onChange={(e) => setForm({ ...form, credit_note_number: e.target.value })}
-              placeholder="Fill in later if not known yet"
-            />
-          </div>
-          <div>
-            <label style={styles.label}>Notes (optional)</label>
-            <input style={styles.input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-          </div>
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={styles.label}>Photo (optional — proof of return / the credit note document)</label>
-          <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile} />
-          {form.pendingSlipName && (
-            <div style={{ fontSize: 11, color: colors.ok, marginTop: 4 }}>Attached: {form.pendingSlipName}</div>
-          )}
-        </div>
-        <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
-          Qty × unit cost = <strong style={{ color: colors.cream }}>R {fmt(Number(form.qty || 0) * Number(form.unit_cost || 0))}</strong> credit
-        </div>
-        <button style={styles.button} onClick={addCreditNote} disabled={saving || !form.item_id || !form.qty || !form.supplier}>
-          {saving ? 'Saving…' : 'Log credit note'}
-        </button>
-      </div>
+        </>
+      )}
 
-      <CollapsibleCard title={`Credit notes in ${period} — R ${fmt(totalCredit)} total`}>
-        <div style={styles.tableWrap}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={styles.th}>Date</th>
-              <th style={styles.th}>Item</th>
-              <th style={styles.th}>Qty</th>
-              <th style={styles.th}>Credit (R)</th>
-              <th style={styles.th}>Supplier</th>
-              <th style={styles.th}>Reason</th>
-              <th style={styles.th}>Credit note #</th>
-              <th style={styles.th}>Slip</th>
-              <th style={styles.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {creditNotes.map((c) => (
-              <tr key={c.id}>
-                <td style={styles.td}>{c.date}</td>
-                <td style={styles.td}>{c.item_description || itemName(c.item_id)}</td>
-                <td style={styles.tdNum}>{fmt(c.qty, 1)}</td>
-                <td style={styles.tdNum}>R {fmt(c.total_credit)}</td>
-                <td style={styles.td}>{c.supplier}</td>
-                <td style={styles.td}>{reasonLabel(c.reason)}</td>
-                <td style={styles.td}>{c.credit_note_number || '—'}</td>
-                <td style={styles.td}>
-                  {c.slip_id && slips[c.slip_id] ? <ViewSlipLink storagePath={slips[c.slip_id].storage_path} /> : '—'}
-                </td>
-                <td style={styles.td}>
-                  <button style={styles.buttonDanger} onClick={() => removeCreditNote(c)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {creditNotes.length === 0 && (
-              <tr>
-                <td style={styles.td} colSpan={9}>
-                  No credit notes logged yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        </div>
-      </CollapsibleCard>
+      {logOpen && (
+        <Drawer
+          title="Log a credit note"
+          meta="Stock going back to the supplier"
+          onClose={onCloseLog}
+          footer={
+            <>
+              <button style={styles.button} onClick={() => addCreditNote()} disabled={!canSave}>{saving ? 'Saving…' : 'Save'}</button>
+              <button style={styles.buttonGhost} onClick={() => addCreditNote({ again: true })} disabled={!canSave}>Save &amp; add another</button>
+              <button style={styles.buttonGhost} onClick={onCloseLog}>Cancel</button>
+              {previewCredit > 0 && <span style={{ fontSize: 13, color: colors.muted, marginLeft: 'auto' }}>R {fmt(previewCredit)} credit</span>}
+            </>
+          }
+        >
+          <div className="drawer-grid">
+            <div className="full">
+              <label style={styles.label}>Item</label>
+              <SearchableSelect
+                value={form.item_id}
+                onChange={pickItem}
+                options={items.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
+                placeholder="Select item…"
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Supplier</label>
+              <SearchableSelect
+                value={form.supplier}
+                onChange={(v) => setForm({ ...form, supplier: v })}
+                options={suppliers.map((s) => ({ value: s.name, label: s.name }))}
+                placeholder="Select supplier…"
+              />
+            </div>
+            <div>
+              <label style={styles.label}>Date</label>
+              <input type="date" style={styles.input} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            </div>
+            <div>
+              <label style={styles.label}>Qty returned{selectedItem ? ` (${selectedItem.purchase_unit})` : ''}</label>
+              <input type="number" inputMode="decimal" style={styles.input} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} />
+            </div>
+            <div>
+              <label style={styles.label}>Unit cost excl. VAT (R)</label>
+              <input type="number" inputMode="decimal" step="0.01" style={styles.input} value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} />
+              <div className="help">Pre-filled with the item's average cost — change it to what was paid.</div>
+            </div>
+            <div>
+              <label style={styles.label}>Reason</label>
+              <select style={styles.input} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}>
+                {CREDIT_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Credit note # (optional)</label>
+              <input style={styles.input} value={form.credit_note_number} onChange={(e) => setForm({ ...form, credit_note_number: e.target.value })} placeholder="Fill in later if not known yet" />
+            </div>
+            <div className="full">
+              <label style={styles.label}>Notes (optional)</label>
+              <input style={styles.input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            </div>
+            <div className="full">
+              <label style={styles.label}>Photo (optional — proof of return or the credit note)</label>
+              <input type="file" accept="image/*" capture="environment" onChange={pickSlipFile} />
+              {form.pendingSlipName && <div className="help" style={{ color: colors.ok }}>Attached: {form.pendingSlipName}</div>}
+            </div>
+          </div>
+        </Drawer>
+      )}
     </>
   )
 }
-
-// ---------------------------------------------------------------------------
-// Count tab — enter the physical closing stock count (in purchase_unit)
-// ---------------------------------------------------------------------------
 
 function CountTab({ items, stockByItem, metricsByItem, location, companyId, period, role, onSave, onLinkItem }) {
   const [countedBy, setCountedBy] = useState('')
