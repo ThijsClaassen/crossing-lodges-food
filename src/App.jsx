@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useLayoutEffect } from 'react'
+import { useBackToHome } from './backButton.js'
 import { sb, LOCATIONS, currentPeriod, UNITS } from './sb.js'
 import { prepareSlipImages, readSlipParts } from './slipTiles.js'
 import { colors, fonts } from './theme.js'
@@ -1047,6 +1048,11 @@ function AuthenticatedApp() {
   // Company-access guards — placed here, after every hook above, rather
   // than before them: React requires the same hooks to run on every render
   // in the same order, so an early return can't come before a useState.
+  // Android back button → this role's first page (#555). Worked out here,
+  // before the early returns, the same way activeTab is below.
+  const backTabs = role === 'admin' ? ADMIN_TABS : STAFF_TABS
+  useBackToHome({ page: backTabs.some((t) => t.id === tab) ? tab : backTabs[0]?.id, setPage: setTab, home: backTabs[0]?.id })
+
   if (companyLoading) {
     return (
       <AuthMessageScreen>
