@@ -4059,7 +4059,10 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
   const [category, setCategory] = useState('')
   const categories = useMemo(() => [...new Set(items.map((it) => it.category).filter(Boolean))].sort(), [items])
   const uncategorisedCount = items.filter((it) => !it.category).length
-  const itemsInCat = category ? items.filter((it) => (category === '__none__' ? !it.category : it.category === category)) : []
+  // (2026-10-08) No category = search ALL items; a category only narrows the
+  // list. Thijs: "always search items, also if you didn't submit a category".
+  const inCat = (it, c) => (c === '__none__' ? !it.category : it.category === c)
+  const itemsInCat = category ? items.filter((it) => inCat(it, category)) : items
 
   async function addIssue({ again = false } = {}) {
     if (!form.item_id || !form.qty) return
@@ -4178,8 +4181,8 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
           <div className="drawer-grid">
             <div>
               <label style={styles.label}>Category</label>
-              <select style={styles.input} value={category} onChange={(e) => { setCategory(e.target.value); setForm({ ...form, item_id: '' }) }}>
-                <option value="">Select category…</option>
+              <select style={styles.input} value={category} onChange={(e) => { const c = e.target.value; setCategory(c); const it = items.find((x) => x.id === form.item_id); if (c && it && !inCat(it, c)) setForm({ ...form, item_id: '' }) }}>
+                <option value="">All categories</option>
                 {categories.map((c) => <option key={c} value={c}>{c}</option>)}
                 {uncategorisedCount > 0 && <option value="__none__">Uncategorised</option>}
               </select>
@@ -4189,9 +4192,8 @@ function IssuesTab({ items, issues, location, companyId, period, onAdd, onRemove
               <SearchableSelect
                 value={form.item_id}
                 onChange={(v) => setForm({ ...form, item_id: v })}
-                options={itemsInCat.map((it) => ({ value: it.id, label: `${it.name} (${it.purchase_unit})` }))}
-                placeholder={category ? 'Select item…' : 'Pick a category first'}
-                disabled={!category}
+                options={itemsInCat.map((it) => ({ value: it.id, label: `${!category && it.category ? `${it.category} · ` : ''}${it.name} (${it.purchase_unit})` }))}
+                placeholder={category ? 'Select item…' : 'Search all items…'}
               />
             </div>
             <div>
