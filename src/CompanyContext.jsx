@@ -14,9 +14,10 @@
 // a UI-level filter, not database-level enforcement — see
 // has_app_access() in add_username_login_and_app_access.sql if that ever
 // needs hardening further.
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { applyTheme, resolveMode } from './branding.js'
 import { supabase } from './supabaseClient.js'
+import { ALL_ON, makeSwitches, noCompanyReason, rowsByCompany } from './companySwitches.js'
 import { setLocations } from './sb.js'
 
 const CompanyContext = createContext(null)
@@ -33,6 +34,8 @@ export function CompanyProvider({ children }) {
   const [error, setError] = useState('')
   const [availableCompanies, setAvailableCompanies] = useState([])
   const [companyId, setCompanyId] = useState(null)
+  // Why there is no company to open, when there isn't (#560 step 3).
+  const [noCompany, setNoCompany] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -86,12 +89,28 @@ export function CompanyProvider({ children }) {
         themeByCompany = {}
       }
 
-      const available = (companies || [])
+      // The company's switches from the founders' site (#560 step 3), read on
+      // their own and allowed to fail like branding above: before
+      // add_platform_console.sql runs, or before company_features is exposed,
+      // the read errors, and that must mean "everything on", not a broken app.
+      let switchRows = {}
+      try {
+        const { data: featRows, error: featErr } = await supabase
+          .from('company_features')
+          .select('company_id, app_key, module_key, enabled')
+        if (!featErr) switchRows = rowsByCompany(featRows)
+      } catch {
+        switchRows = {}
+      }
+
+      const reachable = (companies || [])
         .map((c) => ({
           id: c.id,
           slug: c.slug,
           name: c.name,
           status: c.status,
+          switchRows: switchRows[c.id] || [],
+          columns: c,
           // White-label branding: one accent, one default mode. Null accent
           // means "use the product default".
           themeAccent: themeByCompany[c.id]?.accent ?? null,
@@ -113,6 +132,17 @@ export function CompanyProvider({ children }) {
           return !grants || grants.has(APP_KEY)
         })
 
+      // A company with this app switched off is left out, the same as one
+      // this account has no access to. Founders too: they see what the
+      // client sees, and switch it back on on the founders' site.
+      const available = reachable.filter((c) => makeSwitches(c.switchRows, c.columns).appOn(APP_KEY))
+      const shown = new Set((companies || []).map((c) => c.id))
+      setNoCompany(
+        noCompanyReason({
+          appOffNames: reachable.filter((c) => !available.includes(c)).map((c) => c.name),
+          hiddenMemberships: (memberships || []).filter((m) => !shown.has(m.company_id)).length,
+        })
+      )
       setAvailableCompanies(available)
       const stored = localStorage.getItem(STORAGE_KEY)
       const stillValid = available.find((c) => c.id === stored)
@@ -185,6 +215,10 @@ export function CompanyProvider({ children }) {
     ? { logo_path: current.logoPath, name: current.name, trading_name: current.tradingName }
     : null
 
+  // This company's switches (#560 step 3). Before they load, or when they
+  // can't be read, everything counts as on.
+  const switches = useMemo(() => (current ? makeSwitches(current.switchRows, current.columns) : ALL_ON), [current])
+
   const value = {
     company: companyRow,
     // Gate on lodges too — see locationsReady above.
@@ -194,9 +228,14 @@ export function CompanyProvider({ children }) {
     companyId,
     companyName: current?.name || '',
     companySlug: current?.slug || '',
-    memberBillingEnabled: !!current?.memberBillingEnabled,
+    // Bill to a member: the company bills members (Finance › Members) AND
+    // this app's Bill-to-a-member module is on.
+    memberBillingEnabled: !!current?.memberBillingEnabled && switches.moduleOn(APP_KEY, 'billmember'),
     role: current?.role || null,
     switchCompany,
+    appOn: switches.appOn,
+    moduleOn: (mod) => switches.moduleOn(APP_KEY, mod),
+    noCompany,
     reload: load,
   }
   return <CompanyContext.Provider value={value}>{children}</CompanyContext.Provider>
